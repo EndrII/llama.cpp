@@ -127,6 +127,9 @@ struct clip_hparams {
     int32_t audio_n_fft       = -1;
     int32_t audio_window_len  = -1;
     int32_t audio_hop_len     = -1;
+    bool    audio_no_boundary_tokens = false; // GGUF opt-out of the projector's audio begin/end tokens
+    bool    audio_exact_frame_count  = false; // GGUF opt-in: ceil(n_samples/hop) mel frames instead of n_samples/hop + 1
+    bool    audio_polyphase_resample = false; // GGUF opt-in: polyphase resampling of input audio
 
     // parakeet
     std::vector<float> mel_filters;

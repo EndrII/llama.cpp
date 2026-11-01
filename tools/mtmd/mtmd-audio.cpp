@@ -692,9 +692,12 @@ bool mtmd_audio_preprocessor_qwen3a::preprocess(const float *                 sa
     }
 
     // The effective frame count: center-padded STFT gives ~n_samples/hop_length frames.
-    // We take min(mel_full.n_len, n_samples/hop + 1) to avoid including excess frames.
-    const int64_t n_eff = std::min(mel_full.n_len,
-                               (int64_t)(n_samples / hparams.audio_hop_len) + 1);
+    // By default we take min(mel_full.n_len, n_samples/hop + 1) to avoid including excess frames.
+    // Models that opt in (GGUF key clip.audio.exact_frame_count) keep ceil(n_samples/hop), which is what
+    // WhisperFeatureExtractor's attention mask (mask[::hop]) keeps; the two differ for exact multiples of hop.
+    const int64_t n_eff = hparams.audio_exact_frame_count
+        ? std::min(mel_full.n_len, ((int64_t)n_samples + hparams.audio_hop_len - 1) / hparams.audio_hop_len)
+        : std::min(mel_full.n_len, (int64_t)(n_samples / hparams.audio_hop_len) + 1);
 
     // Split into inference windows matching n_window_infer=800 from model config.
     // Each window is padded to the next multiple of chunk_size for the cgraph.

@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cmath>
+#include <numeric>
 #include <vector>
 
 //#define MTMD_AUDIO_DEBUG
@@ -468,17 +470,82 @@ static bool is_audio_file(const char * buf, size_t len) {
     return is_wav || is_mp3 || is_flac;
 }
 
+// Polyphase FIR resampling with a Kaiser-windowed sinc (beta = 5), the same filter as scipy.signal.resample_poly.
+// miniaudio's built-in resampler is linear and gives noticeably different mel features.
+static double bessel_i0(double x) {
+    double sum = 1.0, term = 1.0;
+    for (int k = 1; k < 64; k++) {
+        term *= (x / (2.0 * k)) * (x / (2.0 * k));
+        sum += term;
+        if (term < 1e-16 * sum) {
+            break;
+        }
+    }
+    return sum;
+}
+
+static void resample_poly(const std::vector<float> & in, int in_rate, int out_rate, std::vector<float> & out) {
+    int g = std::gcd(in_rate, out_rate);
+    const int64_t up   = out_rate / g;
+    const int64_t down = in_rate  / g;
+    if (up == down) {
+        out = in;
+        return;
+    }
+    const int64_t max_rate = std::max(up, down);
+    const int64_t half     = 10 * max_rate;
+    const int64_t n_taps   = 2 * half + 1;
+    const double  beta     = 5.0;
+    const double  fc       = 1.0 / (double) max_rate;
+    const double  pi       = 3.14159265358979323846;
+
+    std::vector<double> h(n_taps);
+    double h_sum = 0.0;
+    const double i0_beta = bessel_i0(beta);
+    for (int64_t n = 0; n < n_taps; n++) {
+        const double x   = (double)(n - half);
+        const double arg = fc * x;
+        const double sinc = arg == 0.0 ? 1.0 : std::sin(pi * arg) / (pi * arg);
+        const double r   = 2.0 * (double) n / (double)(n_taps - 1) - 1.0;
+        const double win = bessel_i0(beta * std::sqrt(std::max(0.0, 1.0 - r * r))) / i0_beta;
+        h[n] = fc * sinc * win;
+        h_sum += h[n];
+    }
+    for (auto & v : h) {
+        v = v / h_sum * (double) up; // unit DC gain, compensate for zero-stuffing
+    }
+
+    const int64_t n_in  = (int64_t) in.size();
+    const int64_t n_out = (n_in * up + down - 1) / down;
+    out.assign(n_out, 0.0f);
+    for (int64_t m = 0; m < n_out; m++) {
+        const int64_t t  = m * down;
+        int64_t k_lo = (t - half + up - 1) / up; // ceil((t - half) / up), t - half may be negative
+        if (t - half < 0) {
+            k_lo = -((half - t) / up);
+        }
+        const int64_t k_hi = (t + half) / up;
+        double acc = 0.0;
+        for (int64_t k = std::max<int64_t>(k_lo, 0); k <= std::min(k_hi, n_in - 1); k++) {
+            acc += (double) in[k] * h[t - k * up + half];
+        }
+        out[m] = (float) acc;
+    }
+}
+
 // returns true if the buffer is a valid audio file
-static bool decode_audio_from_buf(const unsigned char * buf_in, size_t len, int target_sampler_rate, std::vector<float> & pcmf32_mono) {
+static bool decode_audio_from_buf(const unsigned char * buf_in, size_t len, int target_sampler_rate, bool polyphase, std::vector<float> & pcmf32_mono) {
     ma_result result;
     const int channels = 1;
-    ma_decoder_config decoder_config = ma_decoder_config_init(ma_format_f32, channels, target_sampler_rate);
+    // polyphase: decode at the native sample rate (0) and resample below; otherwise let miniaudio resample
+    ma_decoder_config decoder_config = ma_decoder_config_init(ma_format_f32, channels, polyphase ? 0 : target_sampler_rate);
     ma_decoder decoder;
 
     result = ma_decoder_init_memory(buf_in, len, &decoder_config, &decoder);
     if (result != MA_SUCCESS) {
         return false;
     }
+    const int native_rate = (int) decoder.outputSampleRate;
 
     ma_uint64 frame_count;
     ma_uint64 frames_read;
@@ -494,6 +561,16 @@ static bool decode_audio_from_buf(const unsigned char * buf_in, size_t len, int 
         ma_decoder_uninit(&decoder);
         return false;
     }
+    ma_decoder_uninit(&decoder);
+    if (polyphase) {
+        pcmf32_mono.resize(frames_read);
+    }
+
+    if (polyphase && native_rate > 0 && native_rate != target_sampler_rate) {
+        std::vector<float> resampled;
+        resample_poly(pcmf32_mono, native_rate, target_sampler_rate, resampled);
+        pcmf32_mono = std::move(resampled);
+    }
 
 #ifdef MTMD_AUDIO_DEBUG
     // save audio to wav file
@@ -504,7 +581,6 @@ static bool decode_audio_from_buf(const unsigned char * buf_in, size_t len, int 
     ma_encoder_uninit(&encoder);
 #endif
 
-    ma_decoder_uninit(&decoder);
     return true;
 }
 
@@ -538,7 +614,7 @@ mtmd_helper_bitmap_wrapper mtmd_helper_bitmap_init_from_buf(mtmd_context * ctx, 
             LOG_ERR("This model does not support audio input\n");
             return {nullptr, nullptr};
         }
-        if (!audio_helpers::decode_audio_from_buf(buf, len, sample_rate, pcmf32)) {
+        if (!audio_helpers::decode_audio_from_buf(buf, len, sample_rate, mtmd_audio_use_polyphase_resample(ctx), pcmf32)) {
             LOG_ERR("Unable to read WAV audio file from buffer\n");
             return {nullptr, nullptr};
         }

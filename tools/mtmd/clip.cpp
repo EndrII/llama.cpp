@@ -1222,6 +1222,9 @@ struct clip_model_loader {
                 }
             } else if (is_audio) {
                 get_u32(KEY_A_NUM_MEL_BINS, hparams.n_mel_bins);
+                get_bool(KEY_A_NO_BOUNDARY_TOKENS, hparams.audio_no_boundary_tokens, false);
+                get_bool(KEY_A_EXACT_FRAME_COUNT,  hparams.audio_exact_frame_count,  false);
+                get_bool(KEY_A_POLYPHASE_RESAMPLE, hparams.audio_polyphase_resample, false);
                 // some hparams are unused, but still need to set to avoid issues
                 hparams.image_size = 0;
                 hparams.patch_size = 1;

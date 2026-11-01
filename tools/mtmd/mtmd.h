@@ -144,6 +144,9 @@ MTMD_API bool mtmd_support_audio(const mtmd_context * ctx);
 // return -1 if audio is not supported
 MTMD_API int mtmd_get_audio_sample_rate(const mtmd_context * ctx);
 
+// returns true if the model asks for polyphase (scipy resample_poly style) resampling of input audio
+MTMD_API bool mtmd_audio_use_polyphase_resample(const mtmd_context * ctx);
+
 // get the current marker string
 MTMD_API const char * mtmd_get_marker(const mtmd_context * ctx);
 

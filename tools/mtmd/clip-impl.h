@@ -76,6 +76,9 @@
 // audio-specific
 #define KEY_AUDIO_PROJ_TYPE        "clip.audio.projector_type" // for models with mixed modalities
 #define KEY_A_NUM_MEL_BINS         "clip.audio.num_mel_bins"
+#define KEY_A_NO_BOUNDARY_TOKENS   "clip.audio.no_boundary_tokens" // do not wrap audio in the model's begin/end tokens
+#define KEY_A_EXACT_FRAME_COUNT    "clip.audio.exact_frame_count"   // keep ceil(n_samples/hop) mel frames, as WhisperFeatureExtractor does
+#define KEY_A_POLYPHASE_RESAMPLE   "clip.audio.polyphase_resample"  // resample input audio with a Kaiser polyphase filter (scipy resample_poly) instead of miniaudio's linear one
 #define KEY_A_PROJ_STACK_FACTOR    "clip.audio.projector.stack_factor"
 #define KEY_A_CHUNK_SIZE           "clip.audio.chunk_size"
 #define KEY_A_CONV_KERNEL_SIZE     "clip.audio.conv_kernel_size"
