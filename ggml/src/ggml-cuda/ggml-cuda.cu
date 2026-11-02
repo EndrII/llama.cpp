@@ -3289,6 +3289,21 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                 n2->src[0] != node && n2->src[0]->type == GGML_TYPE_F32 && node->src[0]->type == GGML_TYPE_F32 && n2->type == GGML_TYPE_F32 &&
                 n2->src[0]->nb[0] == sizeof(float) && ggml_are_same_shape(n2, node) && ggml_is_contiguous(n2) && ggml_is_contiguous(node) &&
                 memcmp(n2->op_params, node->op_params, sizeof(float)) == 0) {
+                // decode: both feed the GDN kernel directly, which can normalize them itself
+                for (int q = j + 1; q < cgraph->n_nodes && q < j + 40; q++) {
+                    ggml_tensor * gd = cgraph->nodes[q];
+                    if (gd->op != GGML_OP_GATED_DELTA_NET) { continue; }
+                    int users = 0;
+                    for (int u = i + 1; u < cgraph->n_nodes; u++) { for (int sidx = 0; sidx < GGML_MAX_SRC; sidx++) { users += cgraph->nodes[u]->src[sidx] == node || cgraph->nodes[u]->src[sidx] == n2; } }
+                    float eps; memcpy(&eps, node->op_params, sizeof(float));
+                    if (gd->src[0] == node && gd->src[1] == n2 && users == 2 && ggml_cuda_gdn_has_rows(gd->src[5]) && node->src[0]->ne[0] == 128 &&
+                        node->src[0]->nb[0] == sizeof(float) && n2->src[0]->nb[0] == sizeof(float) && ggml_are_same_stride(node->src[0], n2->src[0]) && eps >= 0.f &&
+                        node->src[0]->ne[2] < 32) {
+                        ggml_cuda_gdn_fold_l2(gd, node->src[0], n2->src[0], eps);
+                        return j - i;
+                    }
+                    break;
+                }
                 ggml_cuda_op_l2_norm_pair(*cuda_ctx, node, n2);
                 return j - i;
             }
