@@ -718,7 +718,7 @@ __global__ __launch_bounds__(1024) void k_rmsnorm_rot_q8x(const float * __restri
 // word (sl*2+dw) holds elements 16*sl+8*dw+{0..3} in its low nibbles and +{4..7} in its high nibbles, so a dot4 against 4 consecutive
 // activation bytes needs no shuffling.  Codes are two's complement nibbles; ^8 turns them into q+8 and the sum of the activation codes
 // (ds.y) removes the offset, as in ggml's Q4_0 x Q8_1 dot.
-constexpr int MV_NW = 4;
+constexpr int MV_NW = 10;
 __device__ __forceinline__ int sdot4(int a, int b, int c) { return ggml_cuda_dp4a(a, b, c); }
 
 template <int NC, bool GATE>
