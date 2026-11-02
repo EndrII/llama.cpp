@@ -3271,6 +3271,12 @@ static std::mutex g_done_mu;
 static std::unordered_set<const ggml_tensor *> g_conv_gathers;     // GET_ROWS nodes elided because their conv cluster reads the cache itself
 static std::unordered_set<const ggml_tensor *> g_done_nodes;       // nodes already computed by an earlier fused kernel
 
+// tensor addresses are reused from one graph to the next: forget everything the fusions registered before a new graph is evaluated
+static void ggml_cuda_fuse_reset() {
+    { std::lock_guard<std::mutex> lk(g_done_mu); g_conv_gathers.clear(); g_done_nodes.clear(); }
+    ggml_cuda_gdn_reset();
+}
+
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
     static bool disable_fusion = getenv("GGML_CUDA_DISABLE_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_FUSION"));
@@ -4458,6 +4464,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     ggml_cuda_set_device(cuda_ctx->device);
 
     ggml_cuda_int4_prepare(*cuda_ctx, cgraph);      // rotated INT4 weights: convert in place before anything is captured
+    ggml_cuda_fuse_reset();
 
     bool use_cuda_graph             = false;
     bool cuda_graph_update_required = false;

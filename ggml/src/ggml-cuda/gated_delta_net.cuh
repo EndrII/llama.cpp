@@ -19,3 +19,4 @@ void ggml_cuda_gdn_skip_gather(const ggml_tensor * state_view, const ggml_tensor
 // the L2 norms of q and k feeding `gdn` were skipped: the decode kernel normalizes q_src / k_src itself
 void ggml_cuda_gdn_fold_l2(const ggml_tensor * gdn, ggml_tensor * q_src, ggml_tensor * k_src, float eps);
 bool ggml_cuda_gdn_has_rows(const ggml_tensor * state_view);
+void ggml_cuda_gdn_reset();

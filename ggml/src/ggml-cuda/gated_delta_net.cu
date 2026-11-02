@@ -916,3 +916,9 @@ void ggml_cuda_op_gated_delta_net_fused_cache(
 }
 
 bool ggml_cuda_gdn_has_rows(const ggml_tensor * state_view) { return gdn_rows_lookup(state_view) != nullptr; }
+
+void ggml_cuda_gdn_reset() {
+    std::lock_guard<std::mutex> lk(g_gdn_rows_mu);
+    g_gdn_rows.clear();
+    g_gdn_l2.clear();
+}
