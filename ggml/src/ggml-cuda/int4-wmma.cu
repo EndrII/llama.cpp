@@ -669,6 +669,50 @@ __global__ __launch_bounds__(32) void k_rot_q8x(const float * __restrict__ X, in
     }
 }
 
+
+// RMS norm * weight (f32 output kept for the other consumers) fused with the rotation + 8-bit quantization of the decode matvec:
+// one block per token, one wave per 256-block of K.
+__global__ __launch_bounds__(1024) void k_rmsnorm_rot_q8x(const float * __restrict__ X, const float * __restrict__ Wt, float * __restrict__ Y, int8_t * __restrict__ Q, float2 * __restrict__ D, int K, float eps) {
+    const int n = blockIdx.x, wave = threadIdx.x >> 5, lane = threadIdx.x & 31, h = lane >> 4, lc = lane & 15, nsb = blockDim.x >> 5;
+    __shared__ float part[32];
+    const float * xr = X + (size_t) n * K + wave * 256 + lane * 8;
+    const float4 x0 = *(const float4 *) xr, x1 = *(const float4 *) (xr + 4);
+    float ss = x0.x * x0.x + x0.y * x0.y + x0.z * x0.z + x0.w * x0.w + x1.x * x1.x + x1.y * x1.y + x1.z * x1.z + x1.w * x1.w;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor(ss, o, 32);
+    if (lane == 0) part[wave] = ss;
+    __syncthreads();
+    float tot = 0.f;
+    for (int i = 0; i < nsb; i++) tot += part[i];
+    const float scale = rsqrtf(tot / (float) K + eps);
+    const float4 w0 = *(const float4 *) (Wt + wave * 256 + lane * 8), w1 = *(const float4 *) (Wt + wave * 256 + lane * 8 + 4);
+    float4 y0, y1;
+    y0.x = scale * x0.x * w0.x; y0.y = scale * x0.y * w0.y; y0.z = scale * x0.z * w0.z; y0.w = scale * x0.w * w0.w;
+    y1.x = scale * x1.x * w1.x; y1.y = scale * x1.y * w1.y; y1.z = scale * x1.z * w1.z; y1.w = scale * x1.w * w1.w;
+    float * yr = Y + (size_t) n * K + wave * 256 + lane * 8;
+    *(float4 *) yr = y0; *(float4 *) (yr + 4) = y1;
+    __syncthreads();                     // the wave reads its 256 normalized values back in the rotation's own layout
+    __threadfence_block();
+    half16v b1, a2;
+#pragma unroll
+    for (int k = 0; k < 16; k++) { b1[k] = h16(k, lc); a2[k] = h16(lc, k < 8 ? 2 * k : 2 * (k - 8) + 1); }
+    const float8v w = rotate_block(Y + (size_t) n * K + wave * 256, lane, b1, a2);
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        const float x = w[i] * 0.0625f;
+        float amax = fabsf(x);
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor(amax, o, 32));
+        const float d = amax / 127.0f;
+        const int q = amax == 0.0f ? 0 : (int) roundf(x / d);
+        float sq = (float) q;
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) sq += __shfl_xor(sq, o, 32);
+        Q[(size_t) n * K + wave * 256 + i * 32 + 16 * h + lc] = (int8_t) q;
+        if (lane == 0) D[(size_t) n * (K / 32) + wave * 8 + i] = make_float2(d, d * sq);
+    }
+}
+
 // decode matvec on the repacked layout: one block = 16 weight rows (a feature tile) x NW waves splitting the 256-blocks of K.
 // lane = (row r = lane & 15, half h = lane >> 4); half h owns groups 4h..4h+3 of every 256-block.  A repacked 32-group is 16 bytes per row:
 // word (sl*2+dw) holds elements 16*sl+8*dw+{0..3} in its low nibbles and +{4..7} in its high nibbles, so a dot4 against 4 consecutive
@@ -1002,6 +1046,30 @@ void ggml_cuda_int4_forget(const void * ptr, size_t size) {
     }
 }
 
+bool ggml_cuda_int4_rmsnorm_rot(ggml_backend_cuda_context & ctx, const ggml_tensor * rms, const ggml_tensor * mul) {
+    if (int4_mode() < 2 || !act_cache_enabled()) return false;
+    if (!GGML_CUDA_CC_IS_RDNA3_0(ggml_cuda_info().devices[ctx.device].cc)) return false;
+    const ggml_tensor * x = rms->src[0];
+    const ggml_tensor * wt = mul->src[0] == rms ? mul->src[1] : mul->src[0];
+    const int K = (int) x->ne[0], N = (int) (x->ne[1] * x->ne[2] * x->ne[3]);
+    if (x->type != GGML_TYPE_F32 || wt->type != GGML_TYPE_F32 || mul->type != GGML_TYPE_F32 || K % 256 || K > 8192 || N < 1 || N > 8) return false;
+    if (!ggml_is_contiguous(x) || !ggml_is_contiguous(mul) || ggml_nelements(wt) != K || !ggml_is_contiguous(wt) || ggml_nelements(mul) != (int64_t) K * N) return false;
+    if (((uintptr_t) x->data & 15) || ((uintptr_t) wt->data & 15) || ((uintptr_t) mul->data & 15)) return false;
+    float eps; memcpy(&eps, rms->op_params, sizeof(float));
+    cudaStream_t stream = ctx.stream();
+    int8_t * xq; float2 * xd;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        MvCache & mc = g_mc[stream];
+        ac_reserve(mc.xq, mc.xq_cap, (size_t) N * K); ac_reserve(mc.xd, mc.xd_cap, (size_t) N * (K / 32) * sizeof(float2));
+        xq = mc.xq; xd = mc.xd;
+        mc.src1 = mul; mc.K = K; mc.N = N;
+    }
+    k_rmsnorm_rot_q8x<<<N, 32 * (K / 256), 0, stream>>>((const float *) x->data, (const float *) wt->data, (float *) mul->data, xq, xd, K, eps);
+    CUDA_CHECK(cudaGetLastError());
+    return true;
+}
+
 void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion) {
     const int K = (int) src0->ne[0], M = (int) src0->ne[1], N = (int) (src1->ne[1] * src1->ne[2] * src1->ne[3]);
     GGML_ASSERT(N >= 1 && N <= 8 && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && src1->ne[0] == K);
@@ -1052,6 +1120,7 @@ void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * 
 #else  // not a HIP build: the feature is unavailable
 
 bool ggml_cuda_int4_rotated(const ggml_tensor *) { return false; }
+bool ggml_cuda_int4_rmsnorm_rot(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *) { return false; }
 void ggml_cuda_int4_rotate(ggml_backend_cuda_context &, const ggml_tensor *, float *) {}
 bool ggml_cuda_int4_fused_ok(const ggml_tensor *) { return false; }
 void ggml_cuda_int4_rot_q8_1(const ggml_tensor *, void *, cudaStream_t) {}

@@ -4013,6 +4013,20 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         }
     }
 
+    // RMS norm * weight whose result feeds a rotated INT4 matvec (decode): norm + rotation + quantization in one kernel
+    if (node->op == GGML_OP_RMS_NORM && ggml_cuda_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL }, {})) {
+        const ggml_tensor * mulx = cgraph->nodes[i + 1];
+        bool feeds_int4 = false;
+        for (int j = i + 2; j < cgraph->n_nodes && j < i + 30 && !feeds_int4; j++) {
+            const ggml_tensor * c = cgraph->nodes[j];
+            feeds_int4 = c->op == GGML_OP_MUL_MAT && c->src[1] == mulx && ggml_cuda_int4_converted(c->src[0]) &&
+                         c->src[1]->ne[1] * c->src[1]->ne[2] * c->src[1]->ne[3] <= MMVQ_MAX_BATCH_SIZE;
+        }
+        if (feeds_int4 && ggml_cuda_int4_rmsnorm_rot(*cuda_ctx, node, mulx)) {
+            return 1;
+        }
+    }
+
     if (ggml_cuda_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ADD }, {})) {
         ggml_cuda_op_rms_norm_fused_add(*cuda_ctx, node, cgraph->nodes[i + 1], cgraph->nodes[i + 2]);
         return 2;

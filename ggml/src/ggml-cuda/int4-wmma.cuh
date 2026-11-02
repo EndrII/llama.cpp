@@ -23,6 +23,9 @@ void ggml_cuda_int4_rot_q8_1(const ggml_tensor * src1, void * q8_1, cudaStream_t
 // The repacked layout (int4 K-slices + fixed-point u16 scales) has exactly the byte size of the Q4_0 tensor, so a rotated weight is
 // converted IN PLACE the first time a graph that uses it is computed (ggml_cuda_int4_prepare).  A converted tensor is no longer valid
 // Q4_0: every matmul with it must go through ggml_cuda_int4_mul_mat (batches > 8) or ggml_cuda_int4_matvec (decode, <= 8 tokens).
+// RMS norm * weight fused with the decode rotation+quantization (fills the activation cache for `mul`); false when not applicable
+bool ggml_cuda_int4_rmsnorm_rot(ggml_backend_cuda_context & ctx, const ggml_tensor * rms, const ggml_tensor * mul);
+
 bool ggml_cuda_int4_converted(const ggml_tensor * src0);
 void ggml_cuda_int4_prepare(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph);
 // decode-sized matmul (<= 8 tokens) on converted weights: fused rotate+Q8 quantisation, then a matvec on the repacked layout; supports the
