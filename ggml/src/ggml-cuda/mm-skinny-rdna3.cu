@@ -100,6 +100,47 @@ __global__ void __launch_bounds__(SK_W * 32) sk_kernel(const __bf16 * __restrict
     }
 }
 
+
+
+// decode (1..8 tokens): one 128-thread block per output, f32 dot product over K (bf16 weights, f32 activations, like mul_mat_vec_f)
+__global__ void __launch_bounds__(128) sk_decode_kernel(const __bf16 * __restrict__ W, const float * __restrict__ X, float * __restrict__ out, int M, int N, int K,
+                                                         int epi, const float * __restrict__ bias, const float * __restrict__ scl) {
+    const int c = blockIdx.x, tid = threadIdx.x, w = tid >> 5, lane = tid & 31;
+    float acc[8];
+#pragma unroll
+    for (int n = 0; n < 8; n++) { acc[n] = 0.f; }
+    for (int k = tid * 8; k < K; k += 128 * 8) {
+        const uint4 u = *(const uint4 *) (W + (int64_t) c * K + k);
+        const uint32_t uw[4] = { u.x, u.y, u.z, u.w };
+        float wv[8];
+#pragma unroll
+        for (int i = 0; i < 4; i++) { wv[2 * i] = __uint_as_float(uw[i] << 16); wv[2 * i + 1] = __uint_as_float(uw[i] & 0xFFFF0000u); }
+#pragma unroll
+        for (int n = 0; n < 8; n++) {
+            if (n < N) {
+                const float4 x0 = *(const float4 *) (X + (int64_t) n * K + k), x1 = *(const float4 *) (X + (int64_t) n * K + k + 4);
+                acc[n] = fmaf(wv[0], x0.x, acc[n]); acc[n] = fmaf(wv[1], x0.y, acc[n]); acc[n] = fmaf(wv[2], x0.z, acc[n]); acc[n] = fmaf(wv[3], x0.w, acc[n]);
+                acc[n] = fmaf(wv[4], x1.x, acc[n]); acc[n] = fmaf(wv[5], x1.y, acc[n]); acc[n] = fmaf(wv[6], x1.z, acc[n]); acc[n] = fmaf(wv[7], x1.w, acc[n]);
+            }
+        }
+    }
+    __shared__ float red[4][8];
+#pragma unroll
+    for (int n = 0; n < 8; n++) {
+        float v = acc[n];
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) { v += __shfl_xor(v, o, 32); }
+        if (lane == 0) { red[w][n] = v; }
+    }
+    __syncthreads();
+    if (tid < N) {
+        float v = (red[0][tid] + red[1][tid]) + (red[2][tid] + red[3][tid]);
+        if (epi == 1) { v = 1.0f / (1.0f + expf(-v)); }
+        else if (epi == 2) { const float xb = v + bias[c]; v = (xb > 20.0f ? xb : logf(1.0f + expf(xb))) * scl[c]; }
+        out[(int64_t) tid * M + c] = v;
+    }
+}
+
 } // namespace
 
 bool ggml_cuda_mul_mat_skinny_rdna3(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst,
@@ -108,9 +149,15 @@ bool ggml_cuda_mul_mat_skinny_rdna3(ggml_backend_cuda_context & ctx, const ggml_
     if (!enabled || !GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[ctx.device].cc)) { return false; }
     if (src0->type != GGML_TYPE_BF16 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) { return false; }
     const int64_t K = src0->ne[0], M = src0->ne[1], N = src1->ne[1] * src1->ne[2] * src1->ne[3];
-    if (M > 16 * SK_MAXMT || M % 16 || K % (16 * SK_W) || N <= 8 || src0->ne[2] != 1 || src0->ne[3] != 1 || src1->ne[0] != K) { return false; }
-    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst) || dst->ne[0] != M || ggml_nelements(dst) != N * M) { return false; }
+    const bool decode = N >= 1 && N <= 8;
+    if (M > 16 * SK_MAXMT || (decode ? (K % 8) : (M % 16 || K % (16 * SK_W) || N <= 8)) || src0->ne[2] != 1 || src0->ne[3] != 1 || src1->ne[0] != K) { return false; }
+    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst) || (epi == 0 && dst->ne[0] != M) || ggml_nelements(dst) != N * M) { return false; }
     if (((uintptr_t) src0->data & 15) || ((uintptr_t) src1->data & 15)) { return false; }
+    if (decode) {
+        sk_decode_kernel<<<(unsigned) M, 128, 0, ctx.stream()>>>((const __bf16 *) src0->data, (const float *) src1->data, (float *) dst->data, (int) M, (int) N, (int) K, epi, bias, scl);
+        CUDA_CHECK(cudaGetLastError());
+        return true;
+    }
     sk_kernel<<<dim3((unsigned) ((N + 15) / 16)), SK_W * 32, 0, ctx.stream()>>>((const __bf16 *) src0->data, (const float *) src1->data, (float *) dst->data, (int) M, (int) N, (int) K, epi, bias, scl);
     CUDA_CHECK(cudaGetLastError());
     return true;
