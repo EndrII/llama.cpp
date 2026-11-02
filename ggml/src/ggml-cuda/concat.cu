@@ -1,4 +1,5 @@
 #include "concat.cuh"
+#include <type_traits>
 
 #include <stdint.h>
 
@@ -139,6 +140,42 @@ static __global__ void __launch_bounds__(CUDA_CONCAT_BLOCK_SIZE)
     }
 }
 
+
+// dim 0, src1 a transposed (time-fastest) view of a channel-fastest matrix: tiled transpose through LDS instead of 4-byte strided reads
+// dst[c][i] = i < ne00 ? src0[c][i] : src1[c][i - ne00], src1[c][t] at element c + t * ne11
+static __global__ void __launch_bounds__(256) concat_dim0_transposed(
+        const char * src0, const float * src1, float * dst,
+        int64_t ne00, int64_t ne01, uint64_t nb00, uint64_t nb01, uint64_t nb02, uint64_t nb03,
+        int64_t ne10, int64_t ne11, uint64_t nb12, uint64_t nb13,
+        uint64_t nb1, uint64_t nb2, uint64_t nb3, int64_t ne2) {
+    __shared__ float tile[32][33];
+    const int64_t c0 = (int64_t) blockIdx.x * 32, t0 = (int64_t) blockIdx.y * 32;
+    const int64_t i2 = blockIdx.z % ne2, i3 = blockIdx.z / ne2;
+    const int tx = threadIdx.x, ty = threadIdx.y;       // 32 x 8
+    const float * s1 = (const float *) ((const char *) src1 + i3 * nb13 + i2 * nb12);
+    float * d = (float *) ((char *) dst + i3 * nb3 + i2 * nb2);
+#pragma unroll
+    for (int r = 0; r < 32; r += 8) {
+        const int64_t t = t0 + ty + r, c = c0 + tx;
+        tile[ty + r][tx] = (t < ne10 && c < ne11) ? s1[c + t * ne11] : 0.f;
+    }
+    __syncthreads();
+#pragma unroll
+    for (int r = 0; r < 32; r += 8) {
+        const int64_t c = c0 + ty + r, t = t0 + tx;
+        if (c < ne11 && t < ne10) { d[c * (nb1 / sizeof(float)) + ne00 + t] = tile[tx][ty + r]; }
+    }
+    if (blockIdx.y == 0) {                               // src0 part
+        for (int idx = ty * 32 + tx; idx < 32 * ne00; idx += 256) {
+            const int64_t c = c0 + idx / ne00, i0 = idx % ne00;
+            if (c < ne01) { d[c * (nb1 / sizeof(float)) + i0] = *(const float *) (src0 + i3 * nb03 + i2 * nb02 + c * nb01 + i0 * nb00); }
+        }
+    }
+}
+
+template <typename T>
+static void concat_cuda_generic(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, int dim, cudaStream_t stream);
+
 template <typename T>
 static void concat_cuda(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, int dim, cudaStream_t stream) {
     if (dim != 3 && ggml_is_contiguous_to_3(src0) && ggml_is_contiguous_to_3(src1)) {
@@ -160,7 +197,24 @@ static void concat_cuda(const ggml_tensor * src0, const ggml_tensor * src1, ggml
 
         CUDA_CHECK(cudaMemcpyAsync((char *) dst->data,         src0->data, size0, cudaMemcpyDeviceToDevice, stream));
         CUDA_CHECK(cudaMemcpyAsync((char *) dst->data + size0, src1->data, size1, cudaMemcpyDeviceToDevice, stream));
+    } else if constexpr (sizeof(T) == 4) {
+        if (dim == 0 && src1->nb[1] == sizeof(float) && src1->nb[0] == (size_t) src1->ne[1] * sizeof(float) && dst->nb[0] == sizeof(float) &&
+            src0->ne[1] == src1->ne[1] && src0->ne[2] == src1->ne[2] && src0->ne[3] == src1->ne[3] && ggml_type_size(src0->type) == 4 && ggml_type_size(src1->type) == 4) {
+            const dim3 grid((dst->ne[1] + 31) / 32, (src1->ne[0] + 31) / 32, dst->ne[2] * dst->ne[3]);
+            concat_dim0_transposed<<<grid, dim3(32, 8), 0, stream>>>((const char *) src0->data, (const float *) src1->data, (float *) dst->data,
+                src0->ne[0], src0->ne[1], src0->nb[0], src0->nb[1], src0->nb[2], src0->nb[3],
+                src1->ne[0], src1->ne[1], src1->nb[2], src1->nb[3], dst->nb[1], dst->nb[2], dst->nb[3], dst->ne[2]);
+            return;
+        }
+        concat_cuda_generic<T>(src0, src1, dst, dim, stream);
     } else {
+        concat_cuda_generic<T>(src0, src1, dst, dim, stream);
+    }
+}
+
+template <typename T>
+static void concat_cuda_generic(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, int dim, cudaStream_t stream) {
+    {
         GGML_ASSERT(!ggml_is_quantized(src0->type));
 
         dim3 grid_dim(dst->ne[1], dst->ne[2], dst->ne[3]);
