@@ -1670,7 +1670,8 @@ static bool ggml_cuda_should_fuse_mul_mat(const ggml_tensor * ffn_up,
     const bool has_bias = ffn_up_bias != nullptr || ffn_gate_bias != nullptr;
     const bool has_scale = ffn_up_scale != nullptr || ffn_gate_scale != nullptr;
 
-    if (ffn_up->src[0] && ggml_cuda_int4_rotated(ffn_up->src[0])) {   // rotated weights need the activation rotation of ggml_cuda_mul_mat
+    // rotated weights get their activation rotation inside mul_mat_vec_q (fused into the Q8_1 quantization)
+    if (ggml_cuda_int4_rotated(ffn_up->src[0]) && !ggml_cuda_int4_fused_ok(ffn_up->src[1])) {
         return false;
     }
     if (has_bias && (!ffn_up_bias || !ffn_gate_bias)) {
@@ -1789,7 +1790,7 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
     ggml_tensor *       src1 = tensor->src[1];
     const ggml_tensor * dst  = tensor;
 
-    if (ggml_cuda_int4_rotated(src0)) {
+    if (ggml_cuda_int4_rotated(src0) && !ggml_cuda_int4_fused_ok(src1)) {
         return false;
     }
 
@@ -1824,6 +1825,11 @@ static void ggml_cuda_mul_mat_core(ggml_backend_cuda_context & ctx, const ggml_t
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     if (ggml_cuda_int4_rotated(src0)) {
         if (ggml_cuda_int4_mul_mat(ctx, src0, src1, dst)) {
+            return;
+        }
+        if (src1->ne[1] <= MMVQ_MAX_BATCH_SIZE && ggml_cuda_int4_fused_ok(src1) && src0->ne[0] == src1->ne[0] && dst->type == GGML_TYPE_F32 &&
+            src0->ne[2] == 1 && src0->ne[3] == 1 && !src0->view_src) {
+            ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);      // decode: the rotation is fused into the Q8_1 quantization
             return;
         }
         ggml_cuda_pool_alloc<float> rot(ctx.pool(), ggml_nelements(src1));

@@ -1,4 +1,5 @@
 #include "mmvq.cuh"
+#include "int4-wmma.cuh"
 #include "quantize.cuh"
 #include "unary.cuh"
 #include "vecdotq.cuh"
@@ -1233,7 +1234,12 @@ void ggml_cuda_mul_mat_vec_q(
         const int64_t s11 = src1->nb[1] / ts_src1;
         const int64_t s12 = src1->nb[2] / ts_src1;
         const int64_t s13 = src1->nb[3] / ts_src1;
-        quantize_row_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
+        if (!ids && ggml_cuda_int4_rotated(src0) && ggml_cuda_int4_fused_ok(src1) && ne10 == ne10_padded) {
+            ggml_cuda_int4_rot_q8_1(src1, src1_q8_1.get(), stream);    // rotated weights: rotate + quantize in one kernel
+        } else {
+            GGML_ASSERT(ids || !ggml_cuda_int4_rotated(src0));
+            quantize_row_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
+        }
     }
 
     const int64_t s01 = src0->nb[1] / ts_src0;
