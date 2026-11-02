@@ -659,6 +659,133 @@ void ggml_cuda_op_rope_impl(ggml_backend_cuda_context & ctx,
     }
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------------------------------
+// Decode attention prep (one token): RMS norm * weight + multi-section RoPE of q (-> f32) and of k (-> the f16 K cache row), and the V row copy
+// into the f16 V cache, in one launch.  One block of 256 threads per head: blocks [0, nq) are q heads, [nq, nq + nk) are k/v heads.
+struct attn_prep_args {
+    const float * qx; int64_t qs1; const float * qw; float * qdst; int nq; float eps_q;
+    const float * kx; const float * kw; half * kcache; const int64_t * kidx; int64_t krow; int nk; float eps_k;
+    const float * vx; half * vcache; const int64_t * vidx; int64_t vrow;
+    const int32_t * pos; int n_dims; float theta_scale; float freq_scale; float ext_factor; float attn_factor; rope_corr_dims corr_dims; mrope_sections sections; bool is_imrope;
+};
+
+static __global__ void __launch_bounds__(256) k_attn_prep(const attn_prep_args a) {
+    const int t = threadIdx.x, b = blockIdx.x;
+    const bool isq = b < a.nq;
+    const int h = isq ? b : b - a.nq;
+    __shared__ float ys[256];
+    __shared__ float red[8];
+    const float v = (isq ? a.qx + (int64_t) h * a.qs1 : a.kx + h * 256)[t];
+    float ss = v * v;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) { ss += __shfl_xor(ss, o, 32); }
+    if ((t & 31) == 0) { red[t >> 5] = ss; }
+    __syncthreads();
+    float tot = 0.f;
+#pragma unroll
+    for (int i = 0; i < 8; i++) { tot += red[i]; }
+    const float scale = rsqrtf(tot / 256.0f + (isq ? a.eps_q : a.eps_k));
+    ys[t] = scale * v * (isq ? a.qw : a.kw)[t];
+    if (!isq) { a.vcache[a.vidx[0] * a.vrow + h * 256 + t] = __float2half(a.vx[h * 256 + t]); }
+    __syncthreads();
+
+    const int nd = a.n_dims, half_d = nd / 2;
+    float lo, hi;
+    int io;
+    if (t >= nd) { lo = ys[t]; hi = 0.f; io = t; }
+    else if (t < half_d) {
+        const int i0 = 2 * t;
+        const int sect_dims = a.sections.v[0] + a.sections.v[1] + a.sections.v[2] + a.sections.v[3];
+        const int sec_w = a.sections.v[1] + a.sections.v[0];
+        const int sector = t % sect_dims;
+        float theta_base = 0.0f;
+        const float pw = powf(a.theta_scale, i0 / 2.0f);
+        if (a.is_imrope) {
+            if (sector % 3 == 1 && sector < 3 * a.sections.v[1]) { theta_base = a.pos[1] * pw; }
+            else if (sector % 3 == 2 && sector < 3 * a.sections.v[2]) { theta_base = a.pos[2] * pw; }
+            else if (sector % 3 == 0 && sector < 3 * a.sections.v[0]) { theta_base = a.pos[0] * pw; }
+            else { theta_base = a.pos[3] * pw; }
+        } else {
+            if (sector < a.sections.v[0]) { theta_base = a.pos[0] * pw; }
+            else if (sector >= a.sections.v[0] && sector < sec_w) { theta_base = a.pos[1] * pw; }
+            else if (sector >= sec_w && sector < sec_w + a.sections.v[2]) { theta_base = a.pos[2] * pw; }
+            else if (sector >= sec_w + a.sections.v[2]) { theta_base = a.pos[3] * pw; }
+        }
+        float cos_theta, sin_theta;
+        rope_yarn<true>(theta_base, a.freq_scale, a.corr_dims, i0, a.ext_factor, a.attn_factor, cos_theta, sin_theta);
+        const float x0 = ys[t], x1 = ys[t + half_d];
+        lo = x0 * cos_theta - x1 * sin_theta;
+        hi = x0 * sin_theta + x1 * cos_theta;
+        io = t;
+    } else { return; }
+    if (isq) {
+        float * d = a.qdst + h * 256;
+        d[io] = lo;
+        if (t < nd) { d[io + half_d] = hi; }
+    } else {
+        half * d = a.kcache + a.kidx[0] * a.krow + h * 256;
+        d[io] = __float2half(lo);
+        if (t < nd) { d[io + half_d] = __float2half(hi); }
+    }
+}
+
+static bool attn_prep_rope_ok(const ggml_tensor * rope, const ggml_tensor * mul, int64_t nheads) {
+    if (rope->op != GGML_OP_ROPE || rope->src[0] != mul || rope->src[2] != nullptr || rope->type != GGML_TYPE_F32) { return false; }
+    const int mode = ((const int32_t *) rope->op_params)[2];
+    if (!(mode & GGML_ROPE_TYPE_MROPE) || mode == GGML_ROPE_TYPE_VISION || (mode & GGML_ROPE_TYPE_NEOX)) { return false; }
+    const int nd = ((const int32_t *) rope->op_params)[1];
+    return nd > 0 && nd <= 256 && nd % 2 == 0 && rope->ne[0] == 256 && rope->ne[1] == nheads && rope->ne[2] == 1 && rope->ne[3] == 1 &&
+           rope->src[1]->type == GGML_TYPE_I32 && ggml_nelements(rope->src[1]) == 4 && ggml_is_contiguous(rope);
+}
+
+// match (launch == false) or run the fused attention prep; the nodes are the unfused graph's: RMS_NORM, MUL, ROPE for q and for k, the K SET_ROWS and the V SET_ROWS
+bool ggml_cuda_op_attn_prep(ggml_backend_cuda_context & ctx, bool launch,
+        const ggml_tensor * rms_q, const ggml_tensor * mul_q, const ggml_tensor * rope_q,
+        const ggml_tensor * rms_k, const ggml_tensor * mul_k, const ggml_tensor * rope_k,
+        const ggml_tensor * sr_k, const ggml_tensor * sr_v) {
+    const ggml_tensor * qx = rms_q->src[0], * kx = rms_k->src[0];
+    const ggml_tensor * qw = mul_q->src[0] == rms_q ? mul_q->src[1] : mul_q->src[0];
+    const ggml_tensor * kw = mul_k->src[0] == rms_k ? mul_k->src[1] : mul_k->src[0];
+    if (rms_q->op != GGML_OP_RMS_NORM || rms_k->op != GGML_OP_RMS_NORM || mul_q->op != GGML_OP_MUL || mul_k->op != GGML_OP_MUL) { return false; }
+    const int64_t nq = qx->ne[1], nk = kx->ne[1];
+    if (qx->type != GGML_TYPE_F32 || kx->type != GGML_TYPE_F32 || qx->ne[0] != 256 || kx->ne[0] != 256 || qx->ne[2] != 1 || qx->ne[3] != 1 || kx->ne[2] != 1 || kx->ne[3] != 1) { return false; }
+    if (qx->nb[0] != sizeof(float) || kx->nb[0] != sizeof(float) || !ggml_is_contiguous(kx) || (qx->nb[1] % sizeof(float)) != 0) { return false; }
+    if (qw->type != GGML_TYPE_F32 || kw->type != GGML_TYPE_F32 || ggml_nelements(qw) != 256 || ggml_nelements(kw) != 256 || !ggml_is_contiguous(qw) || !ggml_is_contiguous(kw)) { return false; }
+    if (mul_q->type != GGML_TYPE_F32 || mul_k->type != GGML_TYPE_F32) { return false; }
+    if (!attn_prep_rope_ok(rope_q, mul_q, nq) || !attn_prep_rope_ok(rope_k, mul_k, nk)) { return false; }
+    if (memcmp(rope_q->op_params, rope_k->op_params, 15 * sizeof(int32_t)) != 0 || rope_q->src[1] != rope_k->src[1]) { return false; }
+    const ggml_tensor * kv = sr_k->src[0], * vv = sr_v->src[0];
+    if (sr_k->op != GGML_OP_SET_ROWS || sr_v->op != GGML_OP_SET_ROWS || sr_k->type != GGML_TYPE_F16 || sr_v->type != GGML_TYPE_F16 || !kv || !vv) { return false; }
+    if (sr_k->src[1]->type != GGML_TYPE_I64 || sr_v->src[1]->type != GGML_TYPE_I64 || ggml_nelements(sr_k->src[1]) != 1 || ggml_nelements(sr_v->src[1]) != 1) { return false; }
+    if (sr_k->ne[0] != nk * 256 || sr_v->ne[0] != nk * 256 || ggml_nelements(kv) != nk * 256 || ggml_nelements(vv) != nk * 256 || vv->type != GGML_TYPE_F32) { return false; }
+    if (!ggml_is_contiguous(vv) || (sr_k->nb[1] % sizeof(half)) != 0 || (sr_v->nb[1] % sizeof(half)) != 0 || sr_k->nb[0] != sizeof(half) || sr_v->nb[0] != sizeof(half)) { return false; }
+    if (sr_k->ne[2] != 1 || sr_k->ne[3] != 1 || sr_v->ne[2] != 1 || sr_v->ne[3] != 1) { return false; }
+    if (!launch) { return true; }
+
+    attn_prep_args a = {};
+    a.qx = (const float *) qx->data; a.qs1 = qx->nb[1] / sizeof(float); a.qw = (const float *) qw->data; a.qdst = (float *) rope_q->data; a.nq = (int) nq;
+    memcpy(&a.eps_q, rms_q->op_params, sizeof(float));
+    a.kx = (const float *) kx->data; a.kw = (const float *) kw->data; a.kcache = (half *) sr_k->data; a.kidx = (const int64_t *) sr_k->src[1]->data;
+    a.krow = sr_k->nb[1] / sizeof(half); a.nk = (int) nk; memcpy(&a.eps_k, rms_k->op_params, sizeof(float));
+    a.vx = (const float *) vv->data; a.vcache = (half *) sr_v->data; a.vidx = (const int64_t *) sr_v->src[1]->data; a.vrow = sr_v->nb[1] / sizeof(half);
+    a.pos = (const int32_t *) rope_q->src[1]->data;
+    const int32_t * op = (const int32_t *) rope_q->op_params;
+    a.n_dims = op[1];
+    const int mode = op[2], n_ctx_orig = op[4];
+    float freq_base, beta_fast, beta_slow;
+    memcpy(&freq_base, op + 5, sizeof(float)); memcpy(&a.freq_scale, op + 6, sizeof(float)); memcpy(&a.ext_factor, op + 7, sizeof(float));
+    memcpy(&a.attn_factor, op + 8, sizeof(float)); memcpy(&beta_fast, op + 9, sizeof(float)); memcpy(&beta_slow, op + 10, sizeof(float));
+    memcpy(&a.sections.v, op + 11, sizeof(int) * 4);
+    a.is_imrope = mode == GGML_ROPE_TYPE_IMROPE;
+    ggml_rope_yarn_corr_dims(a.n_dims, n_ctx_orig, freq_base, beta_fast, beta_slow, a.corr_dims.v);
+    a.theta_scale = powf(freq_base, -2.0f / a.n_dims);
+    GGML_ASSERT(a.sections.v[0] > 0 || a.sections.v[1] > 0 || a.sections.v[2] > 0);
+    k_attn_prep<<<(unsigned) (nq + nk), 256, 0, ctx.stream()>>>(a);
+    CUDA_CHECK(cudaGetLastError());
+    return true;
+}
+
 void ggml_cuda_op_rope(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_op_rope_impl<true>(ctx, dst);
 }
