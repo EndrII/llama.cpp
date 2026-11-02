@@ -3273,14 +3273,15 @@ static std::mutex g_done_mu;
 static std::unordered_set<const ggml_tensor *> g_conv_gathers;     // GET_ROWS nodes elided because their conv cluster reads the cache itself
 static std::unordered_set<const ggml_tensor *> g_done_nodes;       // nodes already computed by an earlier fused kernel
 struct ggml_cuda_attn_prep_nodes { const ggml_tensor * n[8]; };    // rms_q, mul_q, rope_q, rms_k, mul_k, rope_k, set_rows k, set_rows v
-static std::unordered_map<const ggml_tensor *, ggml_cuda_attn_prep_nodes> g_attn_prep;   // keyed by the k RMS_NORM node, which runs the fused launch
+static std::unordered_map<const ggml_tensor *, ggml_cuda_attn_prep_nodes> g_attn_prep;
+static std::unordered_map<const ggml_tensor *, std::pair<float *, float *>> g_attn_kv;   // k RMS_NORM node -> scratch buffers holding the K and V projections (computed with q)   // keyed by the k RMS_NORM node, which runs the fused launch
 static std::unordered_map<const ggml_tensor *, float *> g_zredir;   // silu inputs computed early into a scratch buffer (the GDN z projection, launched with qkv)
 struct ggml_cuda_hnorm { const float * x; const float * w; float eps; };
 static std::unordered_map<const ggml_tensor *, ggml_cuda_hnorm> g_hnorm;   // GDN per-head RMS norm * weight outputs applied by the ssm_out matvec's rotation instead
 
 // tensor addresses are reused from one graph to the next: forget everything the fusions registered before a new graph is evaluated
 static void ggml_cuda_fuse_reset() {
-    { std::lock_guard<std::mutex> lk(g_done_mu); g_conv_gathers.clear(); g_done_nodes.clear(); g_hnorm.clear(); g_attn_prep.clear(); g_zredir.clear(); }
+    { std::lock_guard<std::mutex> lk(g_done_mu); g_conv_gathers.clear(); g_done_nodes.clear(); g_hnorm.clear(); g_attn_prep.clear(); g_zredir.clear(); g_attn_kv.clear(); }
     ggml_cuda_gdn_reset();
 }
 
@@ -3301,6 +3302,30 @@ static bool ggml_cuda_chain(const ggml_cgraph * cgraph, int i, std::initializer_
         k++;
     }
     return ok;
+}
+
+static bool attn_prep_ok_g() { static const bool v = !getenv("GGML_ATTN_PREP") || atoi(getenv("GGML_ATTN_PREP")) != 0; return v; }
+
+// the decode attention prep starting at the q RMS_NORM node i: fills the 8 nodes (see ggml_cuda_attn_prep_nodes) and the index of the k RMS_NORM
+static bool ggml_cuda_find_attn_prep(ggml_backend_cuda_context * ctx, const ggml_cgraph * cgraph, int i, ggml_cuda_attn_prep_nodes * out, int * kidx) {
+    const ggml_tensor * node = cgraph->nodes[i];
+    if (node->op != GGML_OP_RMS_NORM || node->src[0]->ne[0] != 256 || node->src[0]->ne[2] != 1 || !ggml_cuda_chain(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ROPE })) { return false; }
+    for (int j = i + 3; j < cgraph->n_nodes && j < i + 16; j++) {
+        const ggml_tensor * kr = cgraph->nodes[j];
+        if (kr->op != GGML_OP_RMS_NORM) { continue; }
+        if (j + 4 >= cgraph->n_nodes || !ggml_cuda_chain(cgraph, j, { GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ROPE, GGML_OP_VIEW, GGML_OP_SET_ROWS })) { return false; }
+        const ggml_tensor * srv = nullptr;
+        for (int q = j + 5; q < cgraph->n_nodes && q < j + 9; q++) { if (cgraph->nodes[q]->op == GGML_OP_SET_ROWS) { srv = cgraph->nodes[q]; break; } }
+        if (!srv) { return false; }
+        // nothing between the q chain and the k chain may read what the deferred q chain produces
+        bool clean = true;
+        for (int q = i + 3; q < j && clean; q++) { for (int sidx = 0; sidx < GGML_MAX_SRC; sidx++) { clean &= cgraph->nodes[q]->src[sidx] != cgraph->nodes[i + 1] && cgraph->nodes[q]->src[sidx] != cgraph->nodes[i + 2]; } }
+        if (!clean || !ggml_cuda_op_attn_prep(*ctx, false, node, cgraph->nodes[i + 1], cgraph->nodes[i + 2], kr, cgraph->nodes[j + 1], cgraph->nodes[j + 2], cgraph->nodes[j + 4], srv)) { return false; }
+        *out = { { node, cgraph->nodes[i + 1], cgraph->nodes[i + 2], kr, cgraph->nodes[j + 1], cgraph->nodes[j + 2], cgraph->nodes[j + 4], srv } };
+        *kidx = j;
+        return true;
+    }
+    return false;
 }
 
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
@@ -3467,8 +3492,39 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         }
     }
 
+    // attention q projection: the layer's k and v projections ride in the same launch (scratch outputs, consumed by the attention prep kernel)
+    static const bool qkv_ok = !getenv("GGML_QKV_MERGE") || atoi(getenv("GGML_QKV_MERGE")) != 0;
+    if (qkv_ok && attn_prep_ok_g() && node->op == GGML_OP_MUL_MAT && strstr(node->src[0]->name, "attn_q") && ggml_cuda_int4_rotated(node->src[0]) && ggml_cuda_int4_converted(node->src[0]) &&
+        node->src[1]->ne[1] * node->src[1]->ne[2] * node->src[1]->ne[3] == 1 && GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[cuda_ctx->device].cc)) {
+        ggml_cuda_attn_prep_nodes pq; int kj = 0, qr = -1;
+        for (int j = i + 1; j < cgraph->n_nodes && j < i + 5; j++) { if (cgraph->nodes[j]->op == GGML_OP_RMS_NORM) { qr = j; break; } }
+        if (qr > 0 && ggml_cuda_find_attn_prep(cuda_ctx, cgraph, qr, &pq, &kj)) {
+            // the k and v projections: the MUL_MATs on the same activation behind the views that lead to the prep kernel's inputs
+            auto base_of = [](const ggml_tensor * t) { while (t && (t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE)) { t = t->src[0]; } return t; };
+            const ggml_tensor * mk = base_of(pq.n[3]->src[0]), * mv = base_of(pq.n[7]->src[0]);
+            auto idx_of = [&](const ggml_tensor * t) { for (int q = i + 1; q < kj; q++) { if (cgraph->nodes[q] == t) { return q; } } return -1; };
+            const int ik = idx_of(mk), iv = idx_of(mv);
+            auto users_of = [&](const ggml_tensor * t) { int u = 0; for (int q = i + 1; q < cgraph->n_nodes; q++) { for (int sidx = 0; sidx < GGML_MAX_SRC; sidx++) { u += cgraph->nodes[q]->src[sidx] == t; } } return u; };
+            bool ok = ik > 0 && iv > 0 && mk != mv;
+            for (const ggml_tensor * m : { mk, mv }) {
+                ok = ok && m && m->op == GGML_OP_MUL_MAT && m->src[1] == node->src[1] && ggml_cuda_int4_rotated(m->src[0]) && ggml_cuda_int4_converted(m->src[0]) && m->type == GGML_TYPE_F32 &&
+                     m->src[0]->ne[0] == node->src[0]->ne[0] && m->src[0]->ne[1] == 1024 && users_of(m) == 1;
+            }
+            if (ok) {
+                float * sb = ggml_cuda_int4_scratch(cuda_ctx->stream(), 4096);
+                ggml_cuda_mv_jobs jobs = {};
+                jobs.n = 3; jobs.w[0] = node->src[0]; jobs.dst[0] = (float *) node->data; jobs.w[1] = mk->src[0]; jobs.dst[1] = sb; jobs.w[2] = mv->src[0]; jobs.dst[2] = sb + 1024;
+                ggml_cuda_int4_matvec(*cuda_ctx, node->src[0], node->src[1], node, nullptr, nullptr, nullptr, 1, 256, nullptr, 0.f, nullptr, nullptr, nullptr, &jobs);
+                std::lock_guard<std::mutex> lk(g_done_mu);
+                g_attn_kv[pq.n[3]] = { sb, sb + 1024 };
+                g_done_nodes.insert(mk); g_done_nodes.insert(mv);
+                return INT_MIN;
+            }
+        }
+    }
+
     // decode attention prep: q (RMS_NORM, MUL, ROPE) is deferred to the k chain (RMS_NORM, MUL, ROPE, VIEW, SET_ROWS) and the V SET_ROWS; one launch for all of it
-    static const bool attn_prep_ok = !getenv("GGML_ATTN_PREP") || atoi(getenv("GGML_ATTN_PREP")) != 0;
+    const bool attn_prep_ok = attn_prep_ok_g();
     if (attn_prep_ok && node->op == GGML_OP_RMS_NORM && GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[cuda_ctx->device].cc)) {
         ggml_cuda_attn_prep_nodes pn = {};
         bool hit;
@@ -3477,28 +3533,19 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
             int sk = -1;
             for (int j = i + 1; j < cgraph->n_nodes && j < i + 8; j++) { if (cgraph->nodes[j] == pn.n[6]) { sk = j; break; } }
             GGML_ASSERT(sk > 0);
-            const bool ok = ggml_cuda_op_attn_prep(*cuda_ctx, true, pn.n[0], pn.n[1], pn.n[2], pn.n[3], pn.n[4], pn.n[5], pn.n[6], pn.n[7]);
+            std::pair<float *, float *> kv = { nullptr, nullptr };
+            { std::lock_guard<std::mutex> lk(g_done_mu); auto ik = g_attn_kv.find(pn.n[3]); if (ik != g_attn_kv.end()) { kv = ik->second; } }
+            const bool ok = ggml_cuda_op_attn_prep(*cuda_ctx, true, pn.n[0], pn.n[1], pn.n[2], pn.n[3], pn.n[4], pn.n[5], pn.n[6], pn.n[7], kv.first, kv.second);
             GGML_ASSERT(ok);
             std::lock_guard<std::mutex> lk(g_done_mu);
             g_done_nodes.insert(pn.n[7]);
             return sk - i;
         }
-        if (node->src[0]->ne[0] == 256 && node->src[0]->ne[2] == 1 && ggml_cuda_chain(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ROPE })) {
-            for (int j = i + 3; j < cgraph->n_nodes && j < i + 16; j++) {
-                const ggml_tensor * kr = cgraph->nodes[j];
-                if (kr->op != GGML_OP_RMS_NORM) { continue; }
-                if (j + 4 >= cgraph->n_nodes || !ggml_cuda_chain(cgraph, j, { GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ROPE, GGML_OP_VIEW, GGML_OP_SET_ROWS })) { break; }
-                const ggml_tensor * srv = nullptr;
-                for (int q = j + 5; q < cgraph->n_nodes && q < j + 9; q++) { if (cgraph->nodes[q]->op == GGML_OP_SET_ROWS) { srv = cgraph->nodes[q]; break; } }
-                if (!srv) { break; }
-                // nothing between the q chain and the k chain may read what the deferred q chain produces
-                bool clean = true;
-                for (int q = i + 3; q < j && clean; q++) { for (int sidx = 0; sidx < GGML_MAX_SRC; sidx++) { clean &= cgraph->nodes[q]->src[sidx] != cgraph->nodes[i + 1] && cgraph->nodes[q]->src[sidx] != cgraph->nodes[i + 2]; } }
-                if (!clean || !ggml_cuda_op_attn_prep(*cuda_ctx, false, node, cgraph->nodes[i + 1], cgraph->nodes[i + 2], kr, cgraph->nodes[j + 1], cgraph->nodes[j + 2], cgraph->nodes[j + 4], srv)) { break; }
-                std::lock_guard<std::mutex> lk(g_done_mu);
-                g_attn_prep[kr] = { { node, cgraph->nodes[i + 1], cgraph->nodes[i + 2], kr, cgraph->nodes[j + 1], cgraph->nodes[j + 2], cgraph->nodes[j + 4], srv } };
-                return 2;
-            }
+        ggml_cuda_attn_prep_nodes pq; int kj = 0;
+        if (ggml_cuda_find_attn_prep(cuda_ctx, cgraph, i, &pq, &kj)) {
+            std::lock_guard<std::mutex> lk(g_done_mu);
+            g_attn_prep[pq.n[3]] = pq;
+            return 2;
         }
     }
 

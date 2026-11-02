@@ -12,4 +12,4 @@ void ggml_cuda_op_rope_fused(ggml_backend_cuda_context & ctx, ggml_tensor * dst,
 bool ggml_cuda_op_attn_prep(ggml_backend_cuda_context & ctx, bool launch,
         const ggml_tensor * rms_q, const ggml_tensor * mul_q, const ggml_tensor * rope_q,
         const ggml_tensor * rms_k, const ggml_tensor * mul_k, const ggml_tensor * rope_k,
-        const ggml_tensor * sr_k, const ggml_tensor * sr_v);
+        const ggml_tensor * sr_k, const ggml_tensor * sr_v, const float * kx_ov = nullptr, const float * vx_ov = nullptr);

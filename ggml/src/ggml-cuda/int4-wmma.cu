@@ -780,16 +780,21 @@ __global__ __launch_bounds__(1024) void k_rmsnorm_rot_q8x(const float * __restri
 constexpr int MV_NW = 10;
 __device__ __forceinline__ int sdot4(int a, int b, int c) { return ggml_cuda_dp4a(a, b, c); }
 
-template <int NC, bool GATE, bool ROT = false, bool CV = false, bool DUAL = false>
+struct mv_jobs_dev { const uint8_t * Wp[3]; const uint8_t * Wh[3]; const float * S[3]; float inv[3]; float * dst[3]; int t[3]; };
+
+template <int NC, bool GATE, bool ROT = false, bool CV = false, bool DUAL = false, bool MJ = false>
 __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ S, float inv,
         const uint8_t * __restrict__ Wp2, const uint8_t * __restrict__ Wh2, const float * __restrict__ S2, float inv2,
         const int8_t * __restrict__ Xq, const float2 * __restrict__ Xd, float * __restrict__ dst, const float * __restrict__ xb, const float * __restrict__ gb,
         int glu, int M, int K, int stride_dst, const float * __restrict__ Xf = nullptr, const float * __restrict__ Yf = nullptr,
-        int rmode = 1, int ystride = 256, const float * __restrict__ Nw = nullptr, float neps = 0.f, const ggml_cuda_conv_fold cv = ggml_cuda_conv_fold{}, float * __restrict__ dst2 = nullptr, int nt1 = 0) {
+        int rmode = 1, int ystride = 256, const float * __restrict__ Nw = nullptr, float neps = 0.f, const ggml_cuda_conv_fold cv = ggml_cuda_conv_fold{}, float * __restrict__ dst2 = nullptr, int nt1 = 0, const mv_jobs_dev jb = mv_jobs_dev{}) {
     // DUAL: blocks [0, nt1) run the first matvec, the rest a second one (weights Wp2/Wh2/S2, output dst2) over the same activation
     const bool second = DUAL && (int) blockIdx.x >= nt1;
     if (DUAL && second) { Wp = Wp2; Wh = Wh2; S = S2; inv = inv2; dst = dst2; }
-    const int lane = threadIdx.x, r = lane & 15, h = lane >> 4, wv = threadIdx.y, ft = second ? (int) blockIdx.x - nt1 : (int) blockIdx.x, nsb = K / 256;
+    // MJ: up to three matvecs over the same activation, blocks [t[j], t[j+1]) run job j
+    const int jid = MJ ? ((int) blockIdx.x >= jb.t[2] ? 2 : ((int) blockIdx.x >= jb.t[1] ? 1 : 0)) : 0;
+    if (MJ) { Wp = jb.Wp[jid]; Wh = jb.Wh[jid]; S = jb.S[jid]; inv = jb.inv[jid]; dst = jb.dst[jid]; }
+    const int lane = threadIdx.x, r = lane & 15, h = lane >> 4, wv = threadIdx.y, ft = MJ ? (int) blockIdx.x - jb.t[jid] : (second ? (int) blockIdx.x - nt1 : (int) blockIdx.x), nsb = K / 256;
     // ROT: the activation is rotated + quantized here, per wave and per 256-block, instead of by a separate kernel (NC == 1)
     __shared__ __align__(16) int8_t rq[ROT ? MV_NW : 1][256];
     __shared__ __align__(16) float2 rd[ROT ? MV_NW : 1][8];
@@ -1182,7 +1187,7 @@ float * ggml_cuda_int4_scratch(cudaStream_t stream, size_t floats) {
 }
 
 void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion, const float * glu_x, const float * glu_y, int mode, int ystride, const float * nw, float eps,
-                           const ggml_cuda_conv_fold * cf, const ggml_tensor * dual_w, float * dual_dst) {
+                           const ggml_cuda_conv_fold * cf, const ggml_tensor * dual_w, float * dual_dst, const ggml_cuda_mv_jobs * jobs) {
     const int K = (int) src0->ne[0], M = (int) src0->ne[1], N = (int) (src1->ne[1] * src1->ne[2] * src1->ne[3]);
     GGML_ASSERT(N >= 1 && N <= 8 && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && src1->ne[0] == K);
     GGML_ASSERT(dst->type == GGML_TYPE_F32 && dst->ne[0] == M && ggml_is_contiguous(dst));
@@ -1237,6 +1242,24 @@ void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * 
         CUDA_CHECK(cudaGetLastError());
         return;
     }
+    if (jobs) {
+        GGML_ASSERT(N == 1 && !gate && !rot && !xb && jobs->n >= 1 && jobs->n <= 3);
+        mv_jobs_dev jd = {};
+        int tiles = 0;
+        for (int q = 0; q < 3; q++) {
+            const ggml_tensor * wt = q < jobs->n ? jobs->w[q] : jobs->w[jobs->n - 1];
+            GGML_ASSERT(wt->ne[0] == K && (wt->ne[1] % 16) == 0);
+            const Int4Weights wj = get_weights(stream, wt);
+            GGML_ASSERT(wj.inplace);
+            jd.Wp[q] = wj.Wp; jd.Wh[q] = wj.Wh; jd.S[q] = wj.S; jd.inv[q] = 1.f / (float) (1 << wj.sh); jd.dst[q] = jobs->dst[q < jobs->n ? q : jobs->n - 1];
+            jd.t[q] = q < jobs->n ? tiles : 1 << 30;
+            if (q < jobs->n) tiles += (int) (wt->ne[1] / 16);
+        }
+        k_mv<1, false, false, false, false, true><<<dim3(tiles), blk, 0, stream>>>(nullptr, nullptr, nullptr, 1.f, nullptr, nullptr, nullptr, 0.f, xq_ptr, xd_ptr, nullptr, nullptr, nullptr, glu, M, K, stride_dst,
+                                                                              nullptr, nullptr, 1, 256, nullptr, 0.f, ggml_cuda_conv_fold{}, nullptr, 0, jd);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
     if (cf && dual_w) {
         GGML_ASSERT(N == 1 && !gate && !rot && !xb && dual_w->ne[0] == K);
         const Int4Weights w2 = get_weights(stream, dual_w);
@@ -1270,7 +1293,7 @@ void ggml_cuda_int4_rot_q8_1(const ggml_tensor *, void *, cudaStream_t) {}
 bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const float *, const float *, const float *) { return false; }
 bool ggml_cuda_int4_converted(const ggml_tensor *) { return false; }
 void ggml_cuda_int4_prepare(ggml_backend_cuda_context &, const ggml_cgraph *) {}
-void ggml_cuda_int4_matvec(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const ggml_cuda_mm_fusion_args_host *, const float *, const float *, int, int, const float *, float, const ggml_cuda_conv_fold *, const ggml_tensor *, float *) {}
+void ggml_cuda_int4_matvec(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const ggml_cuda_mm_fusion_args_host *, const float *, const float *, int, int, const float *, float, const ggml_cuda_conv_fold *, const ggml_tensor *, float *, const ggml_cuda_mv_jobs *) {}
 void ggml_cuda_int4_forget(const void *, size_t) {}
 
 #endif

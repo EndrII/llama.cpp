@@ -743,7 +743,7 @@ static bool attn_prep_rope_ok(const ggml_tensor * rope, const ggml_tensor * mul,
 bool ggml_cuda_op_attn_prep(ggml_backend_cuda_context & ctx, bool launch,
         const ggml_tensor * rms_q, const ggml_tensor * mul_q, const ggml_tensor * rope_q,
         const ggml_tensor * rms_k, const ggml_tensor * mul_k, const ggml_tensor * rope_k,
-        const ggml_tensor * sr_k, const ggml_tensor * sr_v) {
+        const ggml_tensor * sr_k, const ggml_tensor * sr_v, const float * kx_ov, const float * vx_ov) {
     const ggml_tensor * qx = rms_q->src[0], * kx = rms_k->src[0];
     const ggml_tensor * qw = mul_q->src[0] == rms_q ? mul_q->src[1] : mul_q->src[0];
     const ggml_tensor * kw = mul_k->src[0] == rms_k ? mul_k->src[1] : mul_k->src[0];
@@ -766,9 +766,9 @@ bool ggml_cuda_op_attn_prep(ggml_backend_cuda_context & ctx, bool launch,
     attn_prep_args a = {};
     a.qx = (const float *) qx->data; a.qs1 = qx->nb[1] / sizeof(float); a.qw = (const float *) qw->data; a.qdst = (float *) rope_q->data; a.nq = (int) nq;
     memcpy(&a.eps_q, rms_q->op_params, sizeof(float));
-    a.kx = (const float *) kx->data; a.kw = (const float *) kw->data; a.kcache = (half *) sr_k->data; a.kidx = (const int64_t *) sr_k->src[1]->data;
+    a.kx = kx_ov ? kx_ov : (const float *) kx->data; a.kw = (const float *) kw->data; a.kcache = (half *) sr_k->data; a.kidx = (const int64_t *) sr_k->src[1]->data;
     a.krow = sr_k->nb[1] / sizeof(half); a.nk = (int) nk; memcpy(&a.eps_k, rms_k->op_params, sizeof(float));
-    a.vx = (const float *) vv->data; a.vcache = (half *) sr_v->data; a.vidx = (const int64_t *) sr_v->src[1]->data; a.vrow = sr_v->nb[1] / sizeof(half);
+    a.vx = vx_ov ? vx_ov : (const float *) vv->data; a.vcache = (half *) sr_v->data; a.vidx = (const int64_t *) sr_v->src[1]->data; a.vrow = sr_v->nb[1] / sizeof(half);
     a.pos = (const int32_t *) rope_q->src[1]->data;
     const int32_t * op = (const int32_t *) rope_q->op_params;
     a.n_dims = op[1];
