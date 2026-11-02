@@ -721,12 +721,20 @@ __global__ __launch_bounds__(1024) void k_rmsnorm_rot_q8x(const float * __restri
 constexpr int MV_NW = 10;
 __device__ __forceinline__ int sdot4(int a, int b, int c) { return ggml_cuda_dp4a(a, b, c); }
 
-template <int NC, bool GATE>
+template <int NC, bool GATE, bool ROT = false>
 __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ S, float inv,
         const uint8_t * __restrict__ Wp2, const uint8_t * __restrict__ Wh2, const float * __restrict__ S2, float inv2,
         const int8_t * __restrict__ Xq, const float2 * __restrict__ Xd, float * __restrict__ dst, const float * __restrict__ xb, const float * __restrict__ gb,
-        int glu, int M, int K, int stride_dst) {
+        int glu, int M, int K, int stride_dst, const float * __restrict__ Xf = nullptr, const float * __restrict__ Yf = nullptr) {
     const int lane = threadIdx.x, r = lane & 15, h = lane >> 4, wv = threadIdx.y, ft = blockIdx.x, nsb = K / 256;
+    // ROT: the activation is rotated + quantized here, per wave and per 256-block, instead of by a separate kernel (NC == 1)
+    __shared__ __align__(16) int8_t rq[ROT ? MV_NW : 1][256];
+    __shared__ __align__(16) float2 rd[ROT ? MV_NW : 1][8];
+    half16v rb1, ra2;
+    if (ROT) {
+#pragma unroll
+        for (int k = 0; k < 16; k++) { rb1[k] = h16(k, r); ra2[k] = h16(r, k < 8 ? 2 * k : 2 * (k - 8) + 1); }
+    }
     float acc[NC], accg[NC];
 #pragma unroll
     for (int j = 0; j < NC; j++) { acc[j] = 0.f; accg[j] = 0.f; }
@@ -746,6 +754,26 @@ __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__ 
         for (int j = 0; j < NC; j++) {
             const uint4 * xq = (const uint4 *) (Xq + (size_t) j * K + sb * 256 + h * 128);
             const float4 * xd = (const float4 *) (Xd + (size_t) j * (K / 32) + sb * 8 + h * 4);
+            if (ROT) {
+                const float8v wr = rotate_block(Xf + sb * 256, lane, rb1, ra2, Yf ? Yf + sb * 256 : nullptr);
+#pragma unroll
+                for (int i = 0; i < 8; i++) {
+                    const float x = wr[i] * 0.0625f;
+                    float amax = fabsf(x);
+#pragma unroll
+                    for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor(amax, o, 32));
+                    const float d = amax / 127.0f;
+                    const int q = amax == 0.0f ? 0 : (int) roundf(x / d);
+                    float sq = (float) q;
+#pragma unroll
+                    for (int o = 16; o > 0; o >>= 1) sq += __shfl_xor(sq, o, 32);
+                    rq[wv][i * 32 + 16 * h + r] = (int8_t) q;
+                    if (lane == 0) rd[wv][i] = make_float2(d, d * sq);
+                }
+                __builtin_amdgcn_wave_barrier();
+                xq = (const uint4 *) (&rq[wv][h * 128]);
+                xd = (const float4 *) (&rd[wv][h * 4]);
+            }
             uint4 xv[8]; float4 dv[2];
 #pragma unroll
             for (int i = 0; i < 8; i++) xv[i] = xq[i];
@@ -1087,10 +1115,16 @@ void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * 
         if (fusion->gate_bias) gb = (const float *) fusion->gate_bias->data;
         if (fusion->gate) { g = get_weights(stream, fusion->gate); GGML_ASSERT(g.inplace && fusion->gate->ne[1] == M && fusion->gate->ne[0] == K); gate = true; glu = (int) fusion->glu_op; }
     }
+    // single-consumer inputs (the ones whose producers are not shared with another matvec): rotate + quantize inside the matvec
+    static const bool rot_ok = !getenv("GGML_MV_ROT") || atoi(getenv("GGML_MV_ROT")) != 0;
+    const bool rot = rot_ok && N == 1 && !gate && (strstr(src0->name, "ffn_down") || strstr(src0->name, "ssm_out") || strstr(src0->name, "attn_output")) &&
+                     K % 256 == 0 && (K / 256) >= 1 && ((uintptr_t) (glu_x ? glu_x : (const float *) src1->data) & 15) == 0;
     int8_t * xq_ptr; float2 * xd_ptr;
     ggml_cuda_pool_alloc<int8_t> xq_pool(ctx.pool());
     ggml_cuda_pool_alloc<float2> xd_pool(ctx.pool());
-    if (act_cache_enabled()) {
+    if (rot) {
+        xq_ptr = nullptr; xd_ptr = nullptr;
+    } else if (act_cache_enabled()) {
         bool packed;
         {
             std::lock_guard<std::mutex> lk(g_mu);
@@ -1112,6 +1146,11 @@ void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * 
 #define MV_CASE(NCV) \
     case NCV: if (gate) k_mv<NCV, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, g.Wp, g.Wh, g.S, inv2, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst); \
               else      k_mv<NCV, false><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, nullptr, nullptr, nullptr, 0.f, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst); break;
+    if (rot) {
+        k_mv<1, false, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, nullptr, nullptr, nullptr, 0.f, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst, glu_x ? glu_x : (const float *) src1->data, glu_y);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
     switch (N) { MV_CASE(1) MV_CASE(2) MV_CASE(3) MV_CASE(4) MV_CASE(5) MV_CASE(6) MV_CASE(7) MV_CASE(8) }
 #undef MV_CASE
     CUDA_CHECK(cudaGetLastError());
