@@ -32,6 +32,8 @@
 #include "ggml-cuda/mmq.cuh"
 #include "ggml-cuda/int4-wmma.cuh"
 #include <climits>
+#include <unordered_set>
+#include <mutex>
 #include "ggml-cuda/mm-skinny-rdna3.cuh"
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
@@ -3228,6 +3230,47 @@ static int ggml_cuda_int4_residual_add(const ggml_cgraph * cgraph, int mm_idx, c
     return extra;
 }
 
+// ---- decode conv cluster of a GDN layer: GET_ROWS(conv state) -> RESHAPE -> CONCAT(state, qkv^T) -> {CPY(last columns -> cache), SSM_CONV -> SILU}
+struct ggml_cuda_conv_cluster { int concat_idx, cpy_idx, conv_idx, silu_idx; };
+
+static bool ggml_cuda_match_conv_cluster(const ggml_cgraph * cg, int ci, ggml_cuda_conv_cluster * m) {
+    const ggml_tensor * concat = cg->nodes[ci];
+    if (concat->op != GGML_OP_CONCAT || ggml_get_op_params_i32(concat, 0) != 0 || concat->type != GGML_TYPE_F32) { return false; }
+    const ggml_tensor * rs = concat->src[0];
+    if (!rs || rs->op != GGML_OP_RESHAPE || rs->src[0]->op != GGML_OP_GET_ROWS || rs->ne[0] != 3 || concat->src[1]->type != GGML_TYPE_F32) { return false; }
+    const ggml_tensor * gather = rs->src[0];
+    if (gather->src[0]->type != GGML_TYPE_F32 || gather->src[1]->type != GGML_TYPE_I32 || (gather->src[0]->nb[1] % sizeof(float)) != 0) { return false; }
+    const int64_t T = concat->ne[0] - 3;
+    if (T < 1 || T > 8 || concat->ne[3] != 1 || concat->src[1]->ne[0] != T) { return false; }
+    int cpy = -1, conv = -1, silu = -1, users = 0;
+    for (int j = ci + 1; j < cg->n_nodes && j < ci + 40; j++) {
+        const ggml_tensor * n = cg->nodes[j];
+        for (int sidx = 0; sidx < GGML_MAX_SRC; sidx++) { users += n->src[sidx] == concat; }
+        if (n->op == GGML_OP_CPY && n->src[0]->view_src == concat) { cpy = j; }
+        else if (n->op == GGML_OP_SSM_CONV && n->src[0] == concat) { conv = j; }
+        else if (n->op == GGML_OP_UNARY && ggml_get_unary_op(n) == GGML_UNARY_OP_SILU && conv >= 0 && n->src[0] == cg->nodes[conv]) { silu = j; break; }
+    }
+    if (cpy < 0 || conv < 0 || silu < 0 || users != 2) { return false; }
+    // nothing but views, the cluster itself and state gathers may execute in between
+    for (int j = ci + 1; j < silu; j++) {
+        const ggml_tensor * n = cg->nodes[j];
+        if (n->op == GGML_OP_VIEW || n->op == GGML_OP_RESHAPE || n->op == GGML_OP_PERMUTE || n->op == GGML_OP_TRANSPOSE || n->op == GGML_OP_NONE ||
+            j == cpy || j == conv || n->op == GGML_OP_GET_ROWS ||
+            (n->op == GGML_OP_SCALE && n->data == n->src[0]->data) ||
+            (n->op == GGML_OP_CPY && n->src[1]->view_src != nullptr && n->src[0]->view_src != concat)) { continue; }      // writes into a cache view: allocates nothing      // in-place scale of a cache row: allocates nothing
+            return false;
+    }
+    const ggml_tensor * c = cg->nodes[conv], * s = cg->nodes[silu], * cp = cg->nodes[cpy];
+    if (c->src[1]->type != GGML_TYPE_F32 || c->src[1]->ne[0] != 4 || s->type != GGML_TYPE_F32 || !ggml_is_contiguous(s) || cp->src[1]->type != GGML_TYPE_F32 ||
+        c->src[0]->ne[2] != 1 || s->ne[0] != c->src[0]->ne[1]) { return false; }
+    m->concat_idx = ci; m->cpy_idx = cpy; m->conv_idx = conv; m->silu_idx = silu;
+    return true;
+}
+
+static std::mutex g_done_mu;
+static std::unordered_set<const ggml_tensor *> g_conv_gathers;     // GET_ROWS nodes elided because their conv cluster reads the cache itself
+static std::unordered_set<const ggml_tensor *> g_done_nodes;       // nodes already computed by an earlier fused kernel
+
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
     static bool disable_fusion = getenv("GGML_CUDA_DISABLE_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_FUSION"));
@@ -3250,6 +3293,41 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                 return j - i;
             }
             break;
+        }
+    }
+
+    {   // a node already computed by an earlier fused kernel
+        std::lock_guard<std::mutex> lk(g_done_mu);
+        auto it = g_done_nodes.find(node);
+        if (it != g_done_nodes.end()) { g_done_nodes.erase(it); return INT_MIN; }
+    }
+    static const bool conv_cluster_ok = !getenv("GGML_CONV_CLUSTER") || atoi(getenv("GGML_CONV_CLUSTER")) != 0;
+    if (conv_cluster_ok && GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[cuda_ctx->device].cc)) {
+        if (node->op == GGML_OP_GET_ROWS && node->type == GGML_TYPE_F32 && ggml_node_has_n_uses(cgraph, i, 1)) {
+            for (int j = i + 1; j < cgraph->n_nodes && j < i + 40; j++) {
+                const ggml_tensor * n = cgraph->nodes[j];
+                if (n->op == GGML_OP_CONCAT && n->src[0] && n->src[0]->op == GGML_OP_RESHAPE && n->src[0]->src[0] == node) {
+                    ggml_cuda_conv_cluster m;
+                    if (ggml_cuda_match_conv_cluster(cgraph, j, &m)) {
+                        std::lock_guard<std::mutex> lk(g_done_mu);
+                        g_conv_gathers.insert(node);
+                        return INT_MIN;
+                    }
+                    break;
+                }
+            }
+        }
+        if (node->op == GGML_OP_CONCAT && node->src[0] && node->src[0]->op == GGML_OP_RESHAPE) {
+            bool elided;
+            { std::lock_guard<std::mutex> lk(g_done_mu); elided = g_conv_gathers.count(node->src[0]->src[0]) > 0; }
+            ggml_cuda_conv_cluster m;
+            if (elided && ggml_cuda_match_conv_cluster(cgraph, i, &m)) {
+                ggml_cuda_op_conv_cluster(*cuda_ctx, node->src[0]->src[0], node, cgraph->nodes[m.cpy_idx], cgraph->nodes[m.conv_idx], cgraph->nodes[m.silu_idx]);
+                std::lock_guard<std::mutex> lk(g_done_mu);
+                g_done_nodes.insert(cgraph->nodes[m.cpy_idx]); g_done_nodes.insert(cgraph->nodes[m.conv_idx]); g_done_nodes.insert(cgraph->nodes[m.silu_idx]);
+                return INT_MIN;
+            }
+            GGML_ASSERT(!elided);        // the gather was elided on the promise that this cluster runs
         }
     }
 
