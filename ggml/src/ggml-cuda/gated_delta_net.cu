@@ -1,5 +1,8 @@
 #include "gated_delta_net.cuh"
 #include "ggml-cuda/common.cuh"
+#include <algorithm>
+#include <type_traits>
+#include <cstdlib>
 
 template <int S_v, bool KDA, bool keep_rs_t>
 __global__ void __launch_bounds__((ggml_cuda_get_physical_warp_size() < S_v ? ggml_cuda_get_physical_warp_size() : S_v) * 4, 2)
@@ -275,6 +278,420 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
 }
 #endif // GGML_USE_HIP
 
+#if defined(GGML_USE_HIP)
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Chunked (WY form) gated delta net for RDNA3 WMMA, scalar gate, S_v == 128.  Chunks of C = 64 tokens.
+//
+//   gdn_chunk_prep (parallel over chunk x head x seq):  A = tril(beta_j exp(g_j - g_i) k_j.k_i);  X = (I + A)^-1 [beta v | beta exp(g) k]
+//       (forward substitution in f32), giving  U = T beta v  and  Wm = T beta exp(g) k;  plus Qg = exp(g) q,  Kd = exp(g_C - g) k  and
+//       P = tril(exp(g_t - g_j) q_t.k_j)  (the k.k / q.k products on f16 WMMA).
+//   gdn_chunk_scan (sequential over the chunks of a head, parallel over head x seq x value-column block):  with the state S0 [128 x NB]
+//       delta = U - Wm S0,   out = scale (Qg S0 + P delta),   S <- exp(g_C) S + Kd^T delta,   all on f16 WMMA with f32 accumulation;
+//       the f32 state lives in the WMMA accumulators, an f16 copy (plus an optional f16 residual) in LDS for the B operand.
+// ---------------------------------------------------------------------------------------------------------------------------------
+#if defined(__GFX11__) || !defined(__HIP_DEVICE_COMPILE__)
+#define GDN_WMMA_OK 1
+#endif
+
+typedef float    gdn_f8  __attribute__((ext_vector_type(8)));
+typedef _Float16 gdn_h16 __attribute__((ext_vector_type(16)));
+typedef _Float16 gdn_h8  __attribute__((ext_vector_type(8)));
+
+namespace {
+
+constexpr int GDN_C = 64;
+constexpr int GDN_D = 128;
+constexpr int GDN_KP = GDN_D + 8;      // LDS row stride (halves) of the K / Q tiles and of the state
+constexpr int GDN_AP = GDN_C + 4;      // LDS row stride (floats) of the A matrix
+constexpr int GDN_DP = GDN_C + 8;      // LDS row stride (halves) of delta^T
+
+__device__ __forceinline__ gdn_f8 gdn_wmma(const gdn_h16 & a, const gdn_h16 & b, const gdn_f8 & c) {
+#ifdef GDN_WMMA_OK
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
+#else
+    return c;
+#endif
+}
+
+__device__ __forceinline__ gdn_h16 gdn_ld16(const _Float16 * p) {
+    const uint4 * u = (const uint4 *) p;
+    const uint4 a = u[0], b = u[1];
+    struct { uint4 x, y; } t = { a, b };
+    return __builtin_bit_cast(gdn_h16, t);
+}
+
+__global__ void __launch_bounds__(256, 1)
+gdn_chunk_prep(const float * __restrict__ q, const float * __restrict__ k, const float * __restrict__ v,
+               const float * __restrict__ g, const float * __restrict__ beta,
+               _Float16 * __restrict__ wm, float * __restrict__ uu, _Float16 * __restrict__ qg,
+               _Float16 * __restrict__ kdt, _Float16 * __restrict__ pp, float * __restrict__ gc,
+               int64_t H, int64_t n_tokens, int64_t NC,
+               int64_t sq1, int64_t sq2, int64_t sq3, int64_t sv1, int64_t sv2, int64_t sv3,
+               int64_t sb1, int64_t sb2, int64_t sb3, const uint3 neqk1_magic, const uint3 rq3_magic) {
+    constexpr int C = GDN_C, D = GDN_D, KP = GDN_KP, AP = GDN_AP, BTP = GDN_C + 8, RP = 132;
+    const int c = blockIdx.x, h = blockIdx.y, seq = blockIdx.z;
+    const int tid = threadIdx.x, w = tid >> 5, lane = tid & 31, hh = lane >> 4, lc = lane & 15;
+    const uint32_t iq1 = fastmodulo(h, neqk1_magic);
+    const uint32_t iq3 = fastdiv(seq, rq3_magic);
+    const int64_t id = ((int64_t) seq * H + h) * NC + c;
+
+    __shared__ __align__(16) _Float16 buf[2 * C * KP];      // K | Q tiles, later the transposed panel solutions [128][BTP]
+    __shared__ __align__(16) float am[C * AP];
+    __shared__ __align__(16) float rb[16 * RP];
+    __shared__ float gam[C], bet[C], eg[C], ek[C];
+    _Float16 * kh = buf, * qh = buf + C * KP, * bt = buf;
+
+    const float * kb = k + iq3 * sq3 + iq1 * sq1;
+    const float * qb = q + iq3 * sq3 + iq1 * sq1;
+    const float * vb = v + seq * sv3 + (int64_t) h * sv1;
+    const int64_t tok0 = (int64_t) c * C;
+
+    {
+        float4 kv[8], qv[8];
+#pragma unroll
+        for (int e = 0; e < 8; e++) {
+            const int idx = tid + 256 * e, row = idx >> 5, c4 = idx & 31;
+            const int64_t tk = std::min(tok0 + row, n_tokens - 1);
+            kv[e] = *(const float4 *) (kb + tk * sq2 + c4 * 4);
+            qv[e] = *(const float4 *) (qb + tk * sq2 + c4 * 4);
+        }
+#pragma unroll
+        for (int e = 0; e < 8; e++) {
+            const int idx = tid + 256 * e, row = idx >> 5, c4 = idx & 31;
+            const float m = tok0 + row < n_tokens ? 1.f : 0.f;
+            _Float16 * kd = kh + row * KP + c4 * 4, * qd = qh + row * KP + c4 * 4;
+            kd[0] = (_Float16) (m * kv[e].x); kd[1] = (_Float16) (m * kv[e].y); kd[2] = (_Float16) (m * kv[e].z); kd[3] = (_Float16) (m * kv[e].w);
+            qd[0] = (_Float16) (m * qv[e].x); qd[1] = (_Float16) (m * qv[e].y); qd[2] = (_Float16) (m * qv[e].z); qd[3] = (_Float16) (m * qv[e].w);
+        }
+    }
+    if (tid < C) {
+        float gv = 0.f, bv = 0.f;
+        if (tok0 + tid < n_tokens) {
+            const int64_t o = (int64_t) seq * sb3 + (tok0 + tid) * sb2 + (int64_t) h * sb1;
+            gv = g[o]; bv = beta[o];
+        }
+        float x = gv;
+#pragma unroll
+        for (int d = 1; d < 32; d *= 2) {
+            const float y = __shfl_up(x, d, 32);
+            if ((tid & 31) >= d) { x += y; }
+        }
+        gam[tid] = x; bet[tid] = bv;
+    }
+    __syncthreads();
+    if (tid >= 32 && tid < C) { gam[tid] += gam[31]; }
+    __syncthreads();
+    if (tid < C) { eg[tid] = expf(gam[tid]); ek[tid] = expf(gam[C - 1] - gam[tid]); }
+
+    // k.k^T (-> A) and q.k^T (-> P) on the lower-triangular 16x16 tiles
+    {
+        const int lt_it[10] = { 0, 1, 1, 2, 2, 2, 3, 3, 3, 3 }, lt_jt[10] = { 0, 0, 1, 0, 1, 2, 0, 1, 2, 3 };
+#pragma unroll
+        for (int r = 0; r < 2; r++) {
+            const int lt = w + 8 * r;
+            if (lt >= 10) { break; }
+            const int it = lt_it[lt], jt = lt_jt[lt];
+            gdn_f8 cg = {0, 0, 0, 0, 0, 0, 0, 0}, cq = cg;
+#pragma unroll
+            for (int ks = 0; ks < 8; ks++) {
+                const gdn_h16 a  = gdn_ld16(kh + (16 * it + lc) * KP + 16 * ks);
+                const gdn_h16 aq = gdn_ld16(qh + (16 * it + lc) * KP + 16 * ks);
+                const gdn_h16 b  = gdn_ld16(kh + (16 * jt + lc) * KP + 16 * ks);
+                cg = gdn_wmma(a, b, cg);
+                cq = gdn_wmma(aq, b, cq);
+            }
+#pragma unroll
+            for (int i = 0; i < 8; i++) {
+                const int row = 16 * it + 2 * i + hh, col = 16 * jt + lc;
+                const float dec = col <= row ? expf(gam[row] - gam[col]) : 0.f;
+                if (row > col) { am[row * AP + col] = bet[row] * dec * cg[i]; }
+                pp[id * C * C + row * C + col] = (_Float16) (dec * cq[i]);
+            }
+        }
+    }
+    __syncthreads();
+
+    // Qg = exp(g) q (row major) and Kd^T = (exp(g_C - g) k)^T from the f16 tiles
+#pragma unroll
+    for (int e = 0; e < 4; e++) {
+        const int item = tid + 256 * e;
+        {
+            const int j = item >> 4, d0 = (item & 15) * 8;
+            const gdn_h8 u = *(const gdn_h8 *) (qh + j * KP + d0);
+            gdn_h8 o;
+#pragma unroll
+            for (int m = 0; m < 8; m++) { o[m] = (_Float16) (eg[j] * (float) u[m]); }
+            *(gdn_h8 *) (qg + id * C * D + j * D + d0) = o;
+        }
+        {
+            const int dk = item >> 3, j0 = (item & 7) * 8;
+            gdn_h8 o;
+#pragma unroll
+            for (int m = 0; m < 8; m++) { o[m] = (_Float16) (ek[j0 + m] * (float) kh[(j0 + m) * KP + dk]); }
+            *(gdn_h8 *) (kdt + id * C * D + dk * C + j0) = o;
+        }
+    }
+    __syncthreads();      // kh / qh are dead from here on
+
+    // X = (I + A)^-1 [beta v | beta exp(g) k] by 16-row panels: the off-diagonal updates on WMMA, the 16x16 triangular solves in f32.
+    // pass 0: U (value columns), pass 1: Wm (key columns, stored negated)
+    auto run_pass = [&](auto tag) {
+        constexpr bool isw = decltype(tag)::value;
+        const float * src = isw ? kb : vb;
+        const int64_t s2 = isw ? sq2 : sv2;
+        __shared__ float rsc[C];
+        if (tid < C) { rsc[tid] = tok0 + tid < n_tokens ? bet[tid] * (isw ? eg[tid] : 1.f) : 0.f; }
+        __syncthreads();
+        gdn_f8 bacc[4];
+        {
+            float lv[4][8];
+#pragma unroll
+            for (int p = 0; p < 4; p++)
+#pragma unroll
+                for (int i = 0; i < 8; i++) {
+                    const int row = 16 * p + 2 * i + hh;
+                    lv[p][i] = src[std::min(tok0 + row, n_tokens - 1) * s2 + 16 * w + lc];
+                }
+#pragma unroll
+            for (int p = 0; p < 4; p++)
+#pragma unroll
+                for (int i = 0; i < 8; i++) { bacc[p][i] = lv[p][i] * rsc[16 * p + 2 * i + hh]; }
+        }
+#pragma unroll
+        for (int p = 0; p < 4; p++) {
+            gdn_f8 acc = bacc[p];
+#pragma unroll
+            for (int kk = 0; kk < p; kk++) {
+                const float4 * ar = (const float4 *) (am + (16 * p + lc) * AP + 16 * kk);
+                gdn_h16 a;
+#pragma unroll
+                for (int q4 = 0; q4 < 4; q4++) {
+                    const float4 f = ar[q4];
+                    a[4 * q4] = (_Float16) -f.x; a[4 * q4 + 1] = (_Float16) -f.y; a[4 * q4 + 2] = (_Float16) -f.z; a[4 * q4 + 3] = (_Float16) -f.w;
+                }
+                acc = gdn_wmma(a, gdn_ld16(bt + (16 * w + lc) * BTP + 16 * kk), acc);
+            }
+#pragma unroll
+            for (int i = 0; i < 8; i++) { rb[(2 * i + hh) * RP + 16 * w + lc] = acc[i]; }
+            __syncthreads();
+            if (tid < 128) {
+                float xv[16];
+#pragma unroll
+                for (int m = 0; m < 16; m++) {
+                    float sacc = rb[m * RP + tid];
+                    const float4 * ar = (const float4 *) (am + (16 * p + m) * AP + 16 * p);
+#pragma unroll
+                    for (int q4 = 0; q4 < m / 4; q4++) {
+                        const float4 f = ar[q4];
+                        sacc = fmaf(-f.x, xv[4 * q4], sacc); sacc = fmaf(-f.y, xv[4 * q4 + 1], sacc);
+                        sacc = fmaf(-f.z, xv[4 * q4 + 2], sacc); sacc = fmaf(-f.w, xv[4 * q4 + 3], sacc);
+                    }
+#pragma unroll
+                    for (int q = 4 * (m / 4); q < m; q++) { sacc = fmaf(-am[(16 * p + m) * AP + 16 * p + q], xv[q], sacc); }
+                    xv[m] = sacc;
+                }
+#pragma unroll
+                for (int m = 0; m < 16; m++) {
+                    if constexpr (!isw) { uu[id * C * D + (16 * p + m) * D + tid] = xv[m]; }
+                    else                { wm[id * C * D + (16 * p + m) * D + tid] = (_Float16) -xv[m]; }
+                }
+                if (p < 3) {
+                    gdn_h8 o0, o1;
+#pragma unroll
+                    for (int m = 0; m < 8; m++) { o0[m] = (_Float16) xv[m]; o1[m] = (_Float16) xv[8 + m]; }
+                    *(gdn_h8 *) (bt + tid * BTP + 16 * p)     = o0;
+                    *(gdn_h8 *) (bt + tid * BTP + 16 * p + 8) = o1;
+                }
+            }
+            __syncthreads();
+        }
+    };
+    run_pass(std::false_type());
+    run_pass(std::true_type());
+    if (tid == 0) { gc[id] = eg[C - 1]; }
+}
+
+template <int NT, bool SPLIT>
+__global__ void __launch_bounds__(128, 2)
+gdn_chunk_scan(const _Float16 * __restrict__ wm, const float * __restrict__ uu, const _Float16 * __restrict__ qg,
+               const _Float16 * __restrict__ kdt, const _Float16 * __restrict__ pp, const float * __restrict__ gc,
+               const float * __restrict__ s_in, float * __restrict__ out, float * __restrict__ s_out,
+               int64_t H, int64_t n_tokens, int64_t NC, float scale) {
+    constexpr int C = GDN_C, D = GDN_D, NB = NT * 16, SP = GDN_KP, DP = GDN_DP;
+    const int tid = threadIdx.x, w = tid >> 5, lane = tid & 31, hh = lane >> 4, lc = lane & 15;
+    const int h = blockIdx.y, seq = blockIdx.z, col0 = blockIdx.x * NB;
+
+    __shared__ __align__(16) _Float16 st[2][NB][SP];
+    __shared__ __align__(16) _Float16 stl[SPLIT ? 2 : 1][SPLIT ? NB : 1][SP];
+    __shared__ __align__(16) _Float16 dt[NB][DP];
+    __shared__ __align__(16) _Float16 dtl[SPLIT ? NB : 1][SPLIT ? DP : 1];
+
+    const int64_t soff = ((int64_t) seq * H + h) * D * D + (int64_t) col0 * D;
+    gdn_f8 sacc[2][NT];
+#pragma unroll
+    for (int mt = 0; mt < 2; mt++)
+#pragma unroll
+        for (int nt = 0; nt < NT; nt++)
+#pragma unroll
+            for (int i = 0; i < 8; i++) {
+                const int dk = 32 * w + 16 * mt + 2 * i + hh, n = 16 * nt + lc;
+                const float x = s_in[soff + (int64_t) n * D + dk];
+                sacc[mt][nt][i] = x;
+                const _Float16 xh = (_Float16) x;
+                st[0][n][dk] = xh;
+                if constexpr (SPLIT) { stl[0][n][dk] = (_Float16) (x - (float) xh); }
+            }
+    __syncthreads();
+
+    for (int c = 0; c < NC; c++) {
+        const int cur = c & 1;
+        const int64_t id = ((int64_t) seq * H + h) * NC + c;
+        const _Float16 * wmc = wm + id * C * D, * qgc = qg + id * C * D, * kdc = kdt + id * C * D, * ppc = pp + id * C * C;
+        const float * uc = uu + id * C * D;
+
+        // delta = U - Wm S0   (Wm is stored negated)
+        gdn_f8 ad[NT];
+#pragma unroll
+        for (int nt = 0; nt < NT; nt++)
+#pragma unroll
+            for (int i = 0; i < 8; i++) { ad[nt][i] = uc[(16 * w + 2 * i + hh) * D + col0 + 16 * nt + lc]; }
+#pragma unroll
+        for (int ks = 0; ks < 8; ks++) {
+            const gdn_h16 a = gdn_ld16(wmc + (16 * w + lc) * D + 16 * ks);
+#pragma unroll
+            for (int nt = 0; nt < NT; nt++) {
+                ad[nt] = gdn_wmma(a, gdn_ld16(&st[cur][16 * nt + lc][16 * ks]), ad[nt]);
+                if constexpr (SPLIT) { ad[nt] = gdn_wmma(a, gdn_ld16(&stl[cur][16 * nt + lc][16 * ks]), ad[nt]); }
+            }
+        }
+#pragma unroll
+        for (int nt = 0; nt < NT; nt++)
+#pragma unroll
+            for (int i = 0; i < 8; i++) {
+                const _Float16 hv = (_Float16) ad[nt][i];
+                dt[16 * nt + lc][16 * w + 2 * i + hh] = hv;
+                if constexpr (SPLIT) { dtl[16 * nt + lc][16 * w + 2 * i + hh] = (_Float16) (ad[nt][i] - (float) hv); }
+            }
+        __syncthreads();
+
+        // out = scale (Qg S0 + P delta)
+        gdn_f8 ao[NT];
+#pragma unroll
+        for (int nt = 0; nt < NT; nt++) { ao[nt] = gdn_f8{0, 0, 0, 0, 0, 0, 0, 0}; }
+#pragma unroll
+        for (int ks = 0; ks < 8; ks++) {
+            const gdn_h16 a = gdn_ld16(qgc + (16 * w + lc) * D + 16 * ks);
+#pragma unroll
+            for (int nt = 0; nt < NT; nt++) {
+                ao[nt] = gdn_wmma(a, gdn_ld16(&st[cur][16 * nt + lc][16 * ks]), ao[nt]);
+                if constexpr (SPLIT) { ao[nt] = gdn_wmma(a, gdn_ld16(&stl[cur][16 * nt + lc][16 * ks]), ao[nt]); }
+            }
+        }
+#pragma unroll
+        for (int ks = 0; ks < 4; ks++) {
+            if (ks > w) { break; }
+            const gdn_h16 a = gdn_ld16(ppc + (16 * w + lc) * C + 16 * ks);
+#pragma unroll
+            for (int nt = 0; nt < NT; nt++) {
+                ao[nt] = gdn_wmma(a, gdn_ld16(&dt[16 * nt + lc][16 * ks]), ao[nt]);
+                if constexpr (SPLIT) { ao[nt] = gdn_wmma(a, gdn_ld16(&dtl[16 * nt + lc][16 * ks]), ao[nt]); }
+            }
+        }
+#pragma unroll
+        for (int nt = 0; nt < NT; nt++)
+#pragma unroll
+            for (int i = 0; i < 8; i++) {
+                const int64_t tok = (int64_t) c * C + 16 * w + 2 * i + hh;
+                if (tok < n_tokens) { out[(((int64_t) seq * n_tokens + tok) * H + h) * D + col0 + 16 * nt + lc] = ao[nt][i] * scale; }
+            }
+
+        // S <- exp(g_C) S + Kd^T delta
+        const float gC = gc[id];
+#pragma unroll
+        for (int mt = 0; mt < 2; mt++)
+#pragma unroll
+            for (int nt = 0; nt < NT; nt++) { sacc[mt][nt] *= gC; }
+#pragma unroll
+        for (int ks = 0; ks < 4; ks++) {
+#pragma unroll
+            for (int mt = 0; mt < 2; mt++) {
+                const gdn_h16 a = gdn_ld16(kdc + (32 * w + 16 * mt + lc) * C + 16 * ks);
+#pragma unroll
+                for (int nt = 0; nt < NT; nt++) {
+                    sacc[mt][nt] = gdn_wmma(a, gdn_ld16(&dt[16 * nt + lc][16 * ks]), sacc[mt][nt]);
+                    if constexpr (SPLIT) { sacc[mt][nt] = gdn_wmma(a, gdn_ld16(&dtl[16 * nt + lc][16 * ks]), sacc[mt][nt]); }
+                }
+            }
+        }
+#pragma unroll
+        for (int mt = 0; mt < 2; mt++)
+#pragma unroll
+            for (int nt = 0; nt < NT; nt++)
+#pragma unroll
+                for (int i = 0; i < 8; i++) {
+                    const int dk = 32 * w + 16 * mt + 2 * i + hh, n = 16 * nt + lc;
+                    const _Float16 xh = (_Float16) sacc[mt][nt][i];
+                    st[cur ^ 1][n][dk] = xh;
+                    if constexpr (SPLIT) { stl[cur ^ 1][n][dk] = (_Float16) (sacc[mt][nt][i] - (float) xh); }
+                }
+        __syncthreads();
+    }
+
+#pragma unroll
+    for (int mt = 0; mt < 2; mt++)
+#pragma unroll
+        for (int nt = 0; nt < NT; nt++)
+#pragma unroll
+            for (int i = 0; i < 8; i++) {
+                const int dk = 32 * w + 16 * mt + 2 * i + hh, n = 16 * nt + lc;
+                s_out[soff + (int64_t) n * D + dk] = sacc[mt][nt][i];
+            }
+}
+
+} // namespace
+
+// returns false when the chunked path does not apply
+static bool gdn_chunk_launch(ggml_backend_cuda_context & ctx,
+        const float * q_d, const float * k_d, const float * v_d, const float * g_d, const float * b_d,
+        const float * s_d, float * dst_d, float * state_d,
+        int64_t S_v, int64_t H, int64_t n_tokens, int64_t n_seqs,
+        int64_t sq1, int64_t sq2, int64_t sq3, int64_t sv1, int64_t sv2, int64_t sv3,
+        int64_t sb1, int64_t sb2, int64_t sb3, int64_t neqk1, int64_t rq3, float scale, cudaStream_t stream) {
+    static const int mode    = getenv("GGML_GDN_CHUNK") ? atoi(getenv("GGML_GDN_CHUNK")) : 1;       // 0 off, 1 f16, 2 f16 + residual
+    static const int min_tok = getenv("GGML_GDN_CHUNK_MIN") ? atoi(getenv("GGML_GDN_CHUNK_MIN")) : 64;
+    static const int nt_sel  = getenv("GGML_GDN_NT") ? atoi(getenv("GGML_GDN_NT")) : 2;
+    if (mode == 0 || S_v != GDN_D || n_tokens < min_tok || ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size != 32) {
+        return false;
+    }
+    constexpr int C = GDN_C, D = GDN_D;
+    constexpr int64_t SEG = 1024;
+    const int64_t ncm = SEG / C;
+    const int64_t nid = n_seqs * H * ncm;
+    ggml_cuda_pool_alloc<_Float16> wm(ctx.pool(), nid * C * D), qg(ctx.pool(), nid * C * D), kdt(ctx.pool(), nid * C * D), pp(ctx.pool(), nid * C * C);
+    ggml_cuda_pool_alloc<float> uu(ctx.pool(), nid * C * D), gc(ctx.pool(), nid);
+    const uint3 neqk1_magic = init_fastdiv_values(neqk1);
+    const uint3 rq3_magic   = init_fastdiv_values(rq3);
+
+    for (int64_t t0 = 0; t0 < n_tokens; t0 += SEG) {
+        const int64_t nt = std::min(SEG, n_tokens - t0);
+        const int64_t NC = (nt + C - 1) / C;
+        gdn_chunk_prep<<<dim3(NC, H, n_seqs), 256, 0, stream>>>(q_d + t0 * sq2, k_d + t0 * sq2, v_d + t0 * sv2, g_d + t0 * sb2, b_d + t0 * sb2,
+            wm.get(), uu.get(), qg.get(), kdt.get(), pp.get(), gc.get(), H, nt, NC,
+            sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3, neqk1_magic, rq3_magic);
+        const float * s_src = t0 == 0 ? s_d : state_d;
+        float * out = dst_d + t0 * S_v * H;
+        if (nt_sel == 1) {
+            if (mode == 2) { gdn_chunk_scan<1, true ><<<dim3(D / 16, H, n_seqs), 128, 0, stream>>>(wm.get(), uu.get(), qg.get(), kdt.get(), pp.get(), gc.get(), s_src, out, state_d, H, nt, NC, scale); }
+            else           { gdn_chunk_scan<1, false><<<dim3(D / 16, H, n_seqs), 128, 0, stream>>>(wm.get(), uu.get(), qg.get(), kdt.get(), pp.get(), gc.get(), s_src, out, state_d, H, nt, NC, scale); }
+        } else {
+            if (mode == 2) { gdn_chunk_scan<2, true ><<<dim3(D / 32, H, n_seqs), 128, 0, stream>>>(wm.get(), uu.get(), qg.get(), kdt.get(), pp.get(), gc.get(), s_src, out, state_d, H, nt, NC, scale); }
+            else           { gdn_chunk_scan<2, false><<<dim3(D / 32, H, n_seqs), 128, 0, stream>>>(wm.get(), uu.get(), qg.get(), kdt.get(), pp.get(), gc.get(), s_src, out, state_d, H, nt, NC, scale); }
+        }
+    }
+    return true;
+}
+#endif // GGML_USE_HIP
+
 template <bool KDA, bool keep_rs_t>
 static void launch_gated_delta_net(
         const float * q_d, const float * k_d, const float * v_d,
@@ -414,6 +831,13 @@ static void ggml_cuda_op_gated_delta_net_impl(
         state_d           = cache->data;
         state_slot_stride = cache->slot_stride;
     }
+
+#if defined(GGML_USE_HIP)
+    if (!kda && !keep_rs && gdn_chunk_launch(ctx, q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
+            S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3, neqk1, rq3, scale, stream)) {
+        return;
+    }
+#endif
 
     if (kda) {
         if (keep_rs) {
