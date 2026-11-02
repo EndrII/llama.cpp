@@ -3905,6 +3905,9 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
             if (node->src[0]->type == GGML_TYPE_F32 && other->type == GGML_TYPE_F32 && ggml_is_contiguous(node->src[0]) && ggml_is_contiguous(other) &&
                 ggml_are_same_shape(node->src[0], other) && ggml_node_has_n_uses(cgraph, i + 1, 1)) {
                 mm = cgraph->nodes[i + 2]; xa = (const float *) node->src[0]->data; xb = (const float *) other->data; extra = 2;
+                if (mm->op == GGML_OP_RESHAPE && mm->src[0] == mul && i + 3 < cgraph->n_nodes) {
+                    mul = mm; mm = cgraph->nodes[i + 3]; extra = 3;      // the GDN output goes through a reshape before ssm_out
+                }
                 if (mm->src[1] != mul) { mm = nullptr; }
             }
         }
