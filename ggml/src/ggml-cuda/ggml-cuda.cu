@@ -3235,6 +3235,22 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     ggml_tensor * node = cgraph->nodes[i];
 
+    // q and k of a GDN layer: two L2 norms of identically shaped tensors with only views in between -> one launch
+    if (node->op == GGML_OP_L2_NORM) {
+        for (int j = i + 1; j < cgraph->n_nodes && j <= i + 4; j++) {
+            ggml_tensor * n2 = cgraph->nodes[j];
+            if (n2->op == GGML_OP_VIEW || n2->op == GGML_OP_RESHAPE || n2->op == GGML_OP_PERMUTE || n2->op == GGML_OP_TRANSPOSE) { continue; }
+            if (n2->op == GGML_OP_L2_NORM && ggml_are_same_shape(n2->src[0], node->src[0]) && ggml_are_same_stride(n2->src[0], node->src[0]) &&
+                n2->src[0] != node && n2->src[0]->type == GGML_TYPE_F32 && node->src[0]->type == GGML_TYPE_F32 && n2->type == GGML_TYPE_F32 &&
+                n2->src[0]->nb[0] == sizeof(float) && ggml_are_same_shape(n2, node) && ggml_is_contiguous(n2) && ggml_is_contiguous(node) &&
+                memcmp(n2->op_params, node->op_params, sizeof(float)) == 0) {
+                ggml_cuda_op_l2_norm_pair(*cuda_ctx, node, n2);
+                return j - i;
+            }
+            break;
+        }
+    }
+
     // GDN gates: skinny bf16 matmul -> reshape -> sigmoid, or -> reshape -> add(bias) -> softplus -> mul(scale), folded into the matmul epilogue
     if (node->op == GGML_OP_MUL_MAT && node->src[0]->type == GGML_TYPE_BF16 && node->src[0]->ne[1] <= 32 && node->src[1]->type == GGML_TYPE_F32 &&
         i + 4 < cgraph->n_nodes && ggml_node_has_n_uses(cgraph, i, 1)) {
