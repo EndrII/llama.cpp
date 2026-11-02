@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <type_traits>
 #include <cstdlib>
+#include <mutex>
+#include <unordered_map>
 
 template <int S_v, bool KDA, bool keep_rs_t>
 __global__ void __launch_bounds__((ggml_cuda_get_physical_warp_size() < S_v ? ggml_cuda_get_physical_warp_size() : S_v) * 4, 2)
@@ -180,7 +182,8 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
                      int64_t H, int64_t n_tokens, int64_t n_seqs,
                      int64_t sq1, int64_t sq2, int64_t sq3, int64_t sv1, int64_t sv2, int64_t sv3,
                      int64_t sb1, int64_t sb2, int64_t sb3,
-                     const uint3 neqk1_magic, const uint3 rq3_magic, float scale, int64_t state_slot_stride, int K) {
+                     const uint3 neqk1_magic, const uint3 rq3_magic, float scale, int64_t state_slot_stride, int K,
+                     const float * __restrict__ rows_base, const int32_t * __restrict__ rows_ids, int64_t rows_stride) {
     constexpr int S_v = 128, R = 64;
     const uint32_t h_idx    = blockIdx.x;
     const uint32_t sequence = blockIdx.y;
@@ -191,7 +194,8 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
 
     float * attn_data = dst + (sequence * n_tokens * H + h_idx) * S_v;
     state += (sequence * H + h_idx) * S_v * S_v;
-    const float * st_in = curr_state + sequence * H * S_v * S_v + h_idx * S_v * S_v + col * S_v + half * R;
+    // rows mode: the recurrent state is read straight from its cache row (what a GET_ROWS would have gathered)
+    const float * st_in = (rows_base ? rows_base + (int64_t) rows_ids[sequence] * rows_stride : curr_state + sequence * H * S_v * S_v) + h_idx * S_v * S_v + col * S_v + half * R;
 
     float s[R];
 #pragma unroll
@@ -698,7 +702,8 @@ static void launch_gated_delta_net(
         int64_t sv1,   int64_t sv2, int64_t sv3,
         int64_t sb1,   int64_t sb2, int64_t sb3,
         int64_t neqk1, int64_t rq3,
-        float scale, int64_t state_slot_stride, int K, cudaStream_t stream) {
+        float scale, int64_t state_slot_stride, int K, cudaStream_t stream,
+        const float * rows_base = nullptr, const int32_t * rows_ids = nullptr, int64_t rows_stride = 0) {
     //TODO: Add chunked kernel for even faster pre-fill
     const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
     const int num_warps = 4;
@@ -737,7 +742,7 @@ static void launch_gated_delta_net(
                     ggml_cuda_kernel_launch(gated_delta_net_cols<keep_rs_t>, lp,
                         q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d, H,
                         n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-                        sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K);
+                        sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K, rows_base, rows_ids, rows_stride);
                     break;
                 }
             }
@@ -752,6 +757,21 @@ static void launch_gated_delta_net(
             GGML_ABORT("fatal error");
             break;
     }
+}
+
+// GET_ROWS nodes whose gather was skipped because the (decode) GDN kernel reads the cache row itself: state view -> GET_ROWS node
+static std::mutex g_gdn_rows_mu;
+static std::unordered_map<const ggml_tensor *, const ggml_tensor *> g_gdn_rows;
+
+void ggml_cuda_gdn_skip_gather(const ggml_tensor * state_view, const ggml_tensor * gather) {
+    std::lock_guard<std::mutex> lk(g_gdn_rows_mu);
+    g_gdn_rows[state_view] = gather;
+}
+
+static const ggml_tensor * gdn_rows_lookup(const ggml_tensor * state_view) {
+    std::lock_guard<std::mutex> lk(g_gdn_rows_mu);
+    auto it = g_gdn_rows.find(state_view);
+    return it == g_gdn_rows.end() ? nullptr : it->second;
 }
 
 static void ggml_cuda_op_gated_delta_net_impl(
@@ -819,6 +839,10 @@ static void ggml_cuda_op_gated_delta_net_impl(
     // K (snapshot slot count) is an op param; state holds s0 only [S_v, S_v, H, n_seqs].
     const int K = ggml_get_op_params_i32(dst, 0);
     const bool keep_rs = K > 1;
+    const ggml_tensor * rows_node = gdn_rows_lookup(src_state);
+    const float * rows_base = rows_node ? (const float *) rows_node->src[0]->data : nullptr;
+    const int32_t * rows_ids = rows_node ? (const int32_t *) rows_node->src[1]->data : nullptr;
+    const int64_t rows_stride = rows_node ? (int64_t) (rows_node->src[0]->nb[1] / sizeof(float)) : 0;
 
     // recurrent state -> gdn_out tail (after attention scores), or the cache when fusing
     float * state_d           = dst_d + S_v * H * n_tokens * n_seqs;
@@ -829,7 +853,7 @@ static void ggml_cuda_op_gated_delta_net_impl(
     }
 
 #if defined(GGML_USE_HIP)
-    if (!kda && !keep_rs && gdn_chunk_launch(ctx, q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
+    if (!rows_node && !kda && !keep_rs && gdn_chunk_launch(ctx, q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
             S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3, neqk1, rq3, scale, stream)) {
         return;
     }
@@ -849,11 +873,11 @@ static void ggml_cuda_op_gated_delta_net_impl(
         if (keep_rs) {
             launch_gated_delta_net<false, true>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
                 S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream);
+                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream, rows_base, rows_ids, rows_stride);
         } else {
             launch_gated_delta_net<false, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
                 S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream);
+                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream, rows_base, rows_ids, rows_stride);
         }
     }
 }

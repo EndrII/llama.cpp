@@ -31,6 +31,7 @@
 #include "ggml-cuda/mmf.cuh"
 #include "ggml-cuda/mmq.cuh"
 #include "ggml-cuda/int4-wmma.cuh"
+#include <climits>
 #include "ggml-cuda/mm-skinny-rdna3.cuh"
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
@@ -3252,6 +3253,31 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         }
     }
 
+    // recurrent-state gather feeding the decode GDN kernel: the kernel reads the cache row itself, the 2 MB copy is skipped
+    if (node->op == GGML_OP_GET_ROWS && node->type == GGML_TYPE_F32 && node->src[0]->type == GGML_TYPE_F32 && node->src[1]->type == GGML_TYPE_I32 &&
+        ggml_node_has_n_uses(cgraph, i, 1) && GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[cuda_ctx->device].cc)) {
+        static const bool rows_ok = !getenv("GGML_GDN_ROWS") || atoi(getenv("GGML_GDN_ROWS")) != 0;
+        for (int j = i + 1; rows_ok && j < cgraph->n_nodes && j < i + 90; j++) {
+            const ggml_tensor * n = cgraph->nodes[j];
+            if (n->op != GGML_OP_GATED_DELTA_NET) { continue; }
+            const ggml_tensor * st = n->src[5];
+            const ggml_tensor * v = n->src[2];
+            const int64_t H = v->ne[1], n_seqs = v->ne[3], S_v = v->ne[0];
+            if (st && st->op == GGML_OP_RESHAPE && st->src[0] == node && S_v == 128 && n->src[3]->ne[0] == 1 && v->ne[2] < 32 &&
+                node->ne[0] == S_v * S_v * H && node->ne[1] == n_seqs && (node->src[0]->nb[1] % sizeof(float)) == 0 && node->src[0]->nb[0] == sizeof(float)) {
+                int users = 0;
+                for (int q = i + 1; q < cgraph->n_nodes; q++) {
+                    for (int sidx = 0; sidx < GGML_MAX_SRC; sidx++) { users += cgraph->nodes[q]->src[sidx] == st; }
+                }
+                if (users == 1) {
+                    ggml_cuda_gdn_skip_gather(st, node);
+                    return INT_MIN;
+                }
+            }
+            break;
+        }
+    }
+
     // GDN gates: skinny bf16 matmul -> reshape -> sigmoid, or -> reshape -> add(bias) -> softplus -> mul(scale), folded into the matmul epilogue
     if (node->op == GGML_OP_MUL_MAT && node->src[0]->type == GGML_TYPE_BF16 && node->src[0]->ne[1] <= 32 && node->src[1]->type == GGML_TYPE_F32 &&
         i + 4 < cgraph->n_nodes && ggml_node_has_n_uses(cgraph, i, 1)) {
@@ -4219,6 +4245,9 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
 
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
 
+                if (nodes_to_skip == INT_MIN) {      // the node itself was elided (its consumer reads the source directly)
+                    continue;
+                }
                 if (nodes_to_skip != 0) {
 #ifdef GGML_CUDA_DEBUG
                     const int last_fused = i + nodes_to_skip;
