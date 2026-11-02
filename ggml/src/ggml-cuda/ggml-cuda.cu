@@ -739,6 +739,7 @@ struct ggml_backend_cuda_buffer_context {
 
 static void ggml_backend_cuda_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
+    ggml_cuda_int4_forget(ctx->dev_ptr, buffer->size);
     delete ctx;
 }
 
@@ -1824,6 +1825,16 @@ static void ggml_cuda_mul_mat_core(ggml_backend_cuda_context & ctx, const ggml_t
 // activations and fall through to the regular quantized path.
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     if (ggml_cuda_int4_rotated(src0)) {
+        if (ggml_cuda_int4_converted(src0)) {      // single-copy weights: only the INT4 kernels can read them
+            if (src1->ne[1] * src1->ne[2] * src1->ne[3] <= MMVQ_MAX_BATCH_SIZE) {
+                ggml_cuda_int4_matvec(ctx, src0, src1, dst, nullptr);
+                return;
+            }
+            if (!ggml_cuda_int4_mul_mat(ctx, src0, src1, dst)) {
+                GGML_ABORT("rotated INT4 weight %s was converted in place but its matmul is not supported by the INT4 kernels", src0->name);
+            }
+            return;
+        }
         if (ggml_cuda_int4_mul_mat(ctx, src0, src1, dst)) {
             return;
         }
@@ -4151,6 +4162,8 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
     ggml_cuda_set_device(cuda_ctx->device);
+
+    ggml_cuda_int4_prepare(*cuda_ctx, cgraph);      // rotated INT4 weights: convert in place before anything is captured
 
     bool use_cuda_graph             = false;
     bool cuda_graph_update_required = false;

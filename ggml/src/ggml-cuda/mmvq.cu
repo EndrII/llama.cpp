@@ -1158,6 +1158,11 @@ void ggml_cuda_mul_mat_vec_q(
     GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
     GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
 
+    if (!ids && ggml_cuda_int4_converted(src0)) {     // single-copy rotated INT4 weights (not Q4_0 any more)
+        ggml_cuda_int4_matvec(ctx, src0, src1, dst, fusion);
+        return;
+    }
+
     GGML_TENSOR_BINARY_OP_LOCALS;
 
     cudaStream_t stream = ctx.stream();

@@ -15,3 +15,15 @@ bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor *
 // ggml_cuda_int4_fused_ok tells whether src1 qualifies; the caller must then use ggml_cuda_mul_mat_vec_q directly.
 bool ggml_cuda_int4_fused_ok(const ggml_tensor * src1);
 void ggml_cuda_int4_rot_q8_1(const ggml_tensor * src1, void * q8_1, cudaStream_t stream);
+
+// ---- single-copy weights (GGML_INT4_INPLACE, default on) --------------------------------------------------------------------
+// The repacked layout (int4 K-slices + fixed-point u16 scales) has exactly the byte size of the Q4_0 tensor, so a rotated weight is
+// converted IN PLACE the first time a graph that uses it is computed (ggml_cuda_int4_prepare).  A converted tensor is no longer valid
+// Q4_0: every matmul with it must go through ggml_cuda_int4_mul_mat (batches > 8) or ggml_cuda_int4_matvec (decode, <= 8 tokens).
+bool ggml_cuda_int4_converted(const ggml_tensor * src0);
+void ggml_cuda_int4_prepare(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph);
+// decode-sized matmul (<= 8 tokens) on converted weights: fused rotate+Q8 quantisation, then a matvec on the repacked layout; supports the
+// gate/bias/GLU fusion of mul_mat_vec_q
+void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion);
+// the device buffer [ptr, ptr+size) is going away: forget converted tensors inside it
+void ggml_cuda_int4_forget(const void * ptr, size_t size);
