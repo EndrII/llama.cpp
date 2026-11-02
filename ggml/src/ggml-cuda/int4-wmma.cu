@@ -851,6 +851,27 @@ Int4Weights get_weights(cudaStream_t stream, const ggml_tensor * src0) {
 
 bool contiguous_rows(const ggml_tensor * t) { return t->nb[0] == ggml_type_size(t->type) && t->nb[1] == t->ne[0] * ggml_type_size(t->type); }
 
+// Quantized activations of the last rotated matmul, per stream.  Matmuls that share an input (qkv + z-gate, q/k/v, ffn gate/up) reuse them
+// instead of rotating and packing the same rows again.  Valid while the graph that filled it is running: the allocator keeps src1 alive until its
+// last consumer, and ggml_cuda_int4_prepare() (called at the top of every graph compute) drops the entry.  Buffers are never freed, because
+// a captured CUDA graph keeps pointing at them.
+struct ActCache {
+    const ggml_tensor * src1 = nullptr;
+    int K = 0, N = 0;
+    bool a8 = false;
+    uint8_t * x4 = nullptr; size_t x4_cap = 0;
+    uint8_t * xm = nullptr; size_t xm_cap = 0;
+    float *   xr = nullptr; size_t xr_cap = 0;
+};
+std::unordered_map<cudaStream_t, ActCache> g_ac;
+bool act_cache_enabled() { static const bool e = !getenv("GGML_INT4_NOCACHE"); return e; }
+template <typename T> void ac_reserve(T *& p, size_t & cap, size_t bytes) {
+    if (bytes <= cap) return;
+    CUDA_CHECK(cudaMalloc((void **) &p, bytes));      // the old block stays alive for graphs captured with it
+    cap = bytes;
+}
+
+
 } // namespace
 
 bool ggml_cuda_int4_rotated(const ggml_tensor * src0) {
@@ -893,27 +914,43 @@ bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor *
     const int nsb = K / 256, Npad = (N + TILE_N - 1) / TILE_N * TILE_N;
     const bool a8 = int4_use_a8(src0);
     const size_t plane = (size_t) Npad * K / 2;
-    ggml_cuda_pool_alloc<uint8_t> x4(ctx.pool(), a8 ? 2 * plane : plane);
-    ggml_cuda_pool_alloc<uint8_t> xm(ctx.pool(), (size_t) (Npad / 16) * nsb * 16);
-    ggml_cuda_pool_alloc<float>   xr(ctx.pool(), (size_t) Npad);
-    CUDA_CHECK(cudaMemsetAsync(x4.get(), 0, a8 ? 2 * plane : plane, stream));
-    CUDA_CHECK(cudaMemsetAsync(xm.get(), 0, (size_t) (Npad / 16) * nsb * 16, stream));
-    CUDA_CHECK(cudaMemsetAsync(xr.get(), 0, (size_t) Npad * sizeof(float), stream));
+    const size_t x4_bytes = a8 ? 2 * plane : plane, xm_bytes = (size_t) (Npad / 16) * nsb * 16, xr_bytes = (size_t) Npad * sizeof(float);
+    ggml_cuda_pool_alloc<uint8_t> x4p(ctx.pool()), xmp(ctx.pool());
+    ggml_cuda_pool_alloc<float>   xrp(ctx.pool());
+    uint8_t * x4_ptr; uint8_t * xm_ptr; float * xr_ptr;
+    bool packed = false;                                  // activations already in x4/xm/xr
+    const bool cached = act_cache_enabled();
+    if (cached) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        ActCache & ac = g_ac[stream];
+        packed = ac.src1 == src1 && ac.K == K && ac.N == N && ac.a8 == a8;
+        ac_reserve(ac.x4, ac.x4_cap, x4_bytes); ac_reserve(ac.xm, ac.xm_cap, xm_bytes); ac_reserve(ac.xr, ac.xr_cap, xr_bytes);
+        x4_ptr = ac.x4; xm_ptr = ac.xm; xr_ptr = ac.xr;
+        if (!packed) { ac.src1 = src1; ac.K = K; ac.N = N; ac.a8 = a8; }
+    } else {
+        x4p.alloc(x4_bytes); xmp.alloc(xm_bytes); xrp.alloc(xr_bytes);
+        x4_ptr = x4p.get(); xm_ptr = xmp.get(); xr_ptr = xrp.get();
+    }
+    if (!packed && Npad != N) {                           // padding rows must read as zero; every real row is fully written by the pack kernel
+        CUDA_CHECK(cudaMemsetAsync(x4_ptr, 0, x4_bytes, stream));
+        CUDA_CHECK(cudaMemsetAsync(xm_ptr, 0, xm_bytes, stream));
+        CUDA_CHECK(cudaMemsetAsync(xr_ptr, 0, xr_bytes, stream));
+    }
     const size_t smem = (size_t) K * 2 + (size_t) nsb * 4;
     const dim3 grid(M / TILE_M, Npad / TILE_N);
     if (a8) {
-        k_rot_pack8<<<N, 256, smem, stream>>>((const float *) src1->data, K, x4.get(), x4.get() + plane, xm.get(), xr.get());
+        if (!packed) k_rot_pack8<<<N, 256, smem, stream>>>((const float *) src1->data, K, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr);
         switch (w.gw) {
-            case 2:  k_gemm8w<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4.get(), x4.get() + plane, xm.get(), xr.get(), (float *) dst->data, M, N, K); break;
-            case 4:  k_gemm8w<4><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4.get(), x4.get() + plane, xm.get(), xr.get(), (float *) dst->data, M, N, K); break;
-            default: k_gemm8<<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4.get(), x4.get() + plane, xm.get(), xr.get(), (float *) dst->data, M, N, K); break;
+            case 2:  k_gemm8w<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
+            case 4:  k_gemm8w<4><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
+            default: k_gemm8<<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
         }
     } else {
-        k_rot_pack<<<N, 256, smem, stream>>>((const float *) src1->data, K, x4.get(), xm.get(), xr.get(), int4_clip());
+        if (!packed) k_rot_pack<<<N, 256, smem, stream>>>((const float *) src1->data, K, x4_ptr, xm_ptr, xr_ptr, int4_clip());
         switch (w.gw) {
-            case 1:  k_gemm<1><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4.get(), xm.get(), xr.get(), (float *) dst->data, M, N, K); break;
-            case 2:  k_gemm<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4.get(), xm.get(), xr.get(), (float *) dst->data, M, N, K); break;
-            default: k_gemm<4><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4.get(), xm.get(), xr.get(), (float *) dst->data, M, N, K); break;
+            case 1:  k_gemm<1><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
+            case 2:  k_gemm<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
+            default: k_gemm<4><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
         }
     }
     CUDA_CHECK(cudaGetLastError());
@@ -929,6 +966,7 @@ bool ggml_cuda_int4_converted(const ggml_tensor * src0) {
 }
 
 void ggml_cuda_int4_prepare(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph) {
+    { std::lock_guard<std::mutex> lk(g_mu); for (auto & kv : g_ac) kv.second.src1 = nullptr; }
     if (int4_mode() < 2 || !int4_inplace()) return;
     if (!GGML_CUDA_CC_IS_RDNA3_0(ggml_cuda_info().devices[ctx.device].cc)) return;
     for (int i = 0; i < cgraph->n_nodes; i++) {
