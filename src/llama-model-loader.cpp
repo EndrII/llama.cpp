@@ -697,6 +697,15 @@ llama_model_loader::llama_model_loader(
     n_kv      = gguf_get_n_kv(metadata);
     n_tensors = weights_map.size();
 
+    // Ossicle INT4 files store their linear weights Hadamard-rotated: the HIP backend must rotate the activations too (ggml-cuda/int4-wmma.cu)
+    if (gguf_find_key(metadata, "ossicle.int4_rotation_block") >= 0) {
+#ifndef _WIN32
+        setenv("GGML_INT4", "3", 0);
+#endif
+        LLAMA_LOG_INFO("%s: rotated INT4 weights (ossicle.int4_rotation_block) - requires the ROCm/HIP RDNA3 backend, GGML_INT4=%s\n",
+                       __func__, getenv("GGML_INT4") ? getenv("GGML_INT4") : "unset");
+    }
+
     fver = (enum llama_fver) gguf_get_version(metadata);
 
     LLAMA_LOG_INFO("%s: loaded meta data with %d key-value pairs and %d tensors from %s (version %s)\n",
