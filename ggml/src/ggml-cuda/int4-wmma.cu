@@ -104,24 +104,42 @@ __global__ void k_repack(const block_q4_0 * __restrict__ W, int K, int nsb, cons
     ((uint16_t *) (Wh + ((size_t) ((ft * nsb + sb) * 16 + r)) * 16))[g] = (uint16_t) lrintf(fabsf(d) / s * (float) (1 << sh));
 }
 
+// wave32 butterfly reductions on DPP / permlanex16 (a few cycles each) instead of ds_bpermute (__shfl_xor), whose latency dominated the
+// quantization prologues; every lane gets the result
+#ifdef INT4W_DEVICE_OK
+#if defined(__HIP_DEVICE_COMPILE__)
+template <int CTRL> __device__ __forceinline__ float dppx(float x) { return __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(x), CTRL, 0xF, 0xF, false)); }
+__device__ __forceinline__ uint32_t swap_rows_u(uint32_t x) { return (uint32_t) __builtin_amdgcn_permlanex16(0, (int) x, 0x76543210u, 0xFEDCBA98u, false, false); }
+__device__ __forceinline__ float swap_rows(float x) { return __uint_as_float(swap_rows_u(__float_as_uint(x))); }
+__device__ __forceinline__ float wave32_max(float x) {
+    x = fmaxf(x, dppx<0xB1>(x)); x = fmaxf(x, dppx<0x4E>(x)); x = fmaxf(x, dppx<0x141>(x)); x = fmaxf(x, dppx<0x140>(x));
+    return fmaxf(x, swap_rows(x));
+}
+__device__ __forceinline__ float wave32_sum(float x) {
+    x += dppx<0xB1>(x); x += dppx<0x4E>(x); x += dppx<0x141>(x); x += dppx<0x140>(x);
+    return x + swap_rows(x);
+}
+#else
+template <int CTRL> __device__ __forceinline__ float dppx(float x) { return x; }
+__device__ __forceinline__ uint32_t swap_rows_u(uint32_t x) { return x; }
+__device__ __forceinline__ float swap_rows(float x) { return x; }
+__device__ __forceinline__ float wave32_max(float x) { return x; }
+__device__ __forceinline__ float wave32_sum(float x) { return x; }
+#endif
+#endif
+
 // ---------------------------------------------------------------------------------------------------------------- rotation
 // H16 (x) H16 on a 16x16 view of s.*x via two f16 WMMAs; one wave per (row, 256-block)
 // yrow != nullptr: the input is silu(x) * y (a GLU / silu*mul that would otherwise be its own kernel and a round trip through memory)
-__device__ __forceinline__ float8v rotate_block(const float * __restrict__ xrow, int lane, const half16v & b1, const half16v & a2, const float * __restrict__ yrow = nullptr) {
+// the rotation proper, on the 16 values of this lane's row (lane & 15) of the 16x16 view
+__device__ __forceinline__ float8v rotate_regs(const float4 (&v)[4], int lane, const half16v & b1, const half16v & a2) {
 #ifdef INT4W_DEVICE_OK
     const int h = lane >> 4, lc = lane & 15;
     half16v a1;
-    const float4 * xp = (const float4 *) (xrow + lc * 16);
 #pragma unroll
     for (int q = 0; q < 4; q++) {
-        float4 v = xp[q];
-        if (yrow) {
-            const float4 y = ((const float4 *) (yrow + lc * 16))[q];
-            v.x = ggml_cuda_op_silu_single(v.x) * y.x; v.y = ggml_cuda_op_silu_single(v.y) * y.y;
-            v.z = ggml_cuda_op_silu_single(v.z) * y.z; v.w = ggml_cuda_op_silu_single(v.w) * y.w;
-        }
-        a1[4 * q + 0] = (_Float16) (v.x * sign256(lc * 16 + 4 * q + 0)); a1[4 * q + 1] = (_Float16) (v.y * sign256(lc * 16 + 4 * q + 1));
-        a1[4 * q + 2] = (_Float16) (v.z * sign256(lc * 16 + 4 * q + 2)); a1[4 * q + 3] = (_Float16) (v.w * sign256(lc * 16 + 4 * q + 3));
+        a1[4 * q + 0] = (_Float16) (v[q].x * sign256(lc * 16 + 4 * q + 0)); a1[4 * q + 1] = (_Float16) (v[q].y * sign256(lc * 16 + 4 * q + 1));
+        a1[4 * q + 2] = (_Float16) (v[q].z * sign256(lc * 16 + 4 * q + 2)); a1[4 * q + 3] = (_Float16) (v[q].w * sign256(lc * 16 + 4 * q + 3));
     }
     float8v z = {0, 0, 0, 0, 0, 0, 0, 0};
     const float8v p = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a1, b1, z);
@@ -130,7 +148,7 @@ __device__ __forceinline__ float8v rotate_block(const float * __restrict__ xrow,
     for (int i = 0; i < 4; i++) {
         _Float16 lo = (_Float16) p[2 * i], hi = (_Float16) p[2 * i + 1];
         const uint32_t w = (uint32_t) __builtin_bit_cast(uint16_t, lo) | ((uint32_t) __builtin_bit_cast(uint16_t, hi) << 16);
-        own[i] = w; oth[i] = __shfl_xor((int) w, 16, 32);
+        own[i] = w; oth[i] = swap_rows_u(w);
     }
     half16v b2;
 #pragma unroll
@@ -143,6 +161,52 @@ __device__ __forceinline__ float8v rotate_block(const float * __restrict__ xrow,
 #else
     return float8v{0, 0, 0, 0, 0, 0, 0, 0};
 #endif
+}
+
+// sum over the 8 lanes of a half row (aligned groups of 8)
+__device__ __forceinline__ float group8_sum(float x) {
+#ifdef INT4W_DEVICE_OK
+    x += dppx<0xB1>(x); x += dppx<0x4E>(x); x += dppx<0x141>(x);
+#endif
+    return x;
+}
+
+// the input of the rotation: x, or, when yrow != nullptr, a product with y (a GLU / silu*mul or a gate that would otherwise be its own kernel and a round trip through memory)
+//   mode 1: silu(x) * y            mode 2: x * sigmoid(y)            mode 3: silu(x) * ((y * rsqrt(mean(y^2 over 128) + eps)) * nw)   (y = per-head RMS norm, 128-wide)
+__device__ __forceinline__ float8v rotate_block(const float * __restrict__ xrow, int lane, const half16v & b1, const half16v & a2, const float * __restrict__ yrow = nullptr,
+        int mode = 1, const float * __restrict__ nw = nullptr, float eps = 0.f) {
+    const int lc = lane & 15;
+    float4 v[4];
+    const float4 * xp = (const float4 *) (xrow + lc * 16);
+#pragma unroll
+    for (int q = 0; q < 4; q++) { v[q] = xp[q]; }
+    if (yrow) {
+        float4 y[4];
+#pragma unroll
+        for (int q = 0; q < 4; q++) { y[q] = ((const float4 *) (yrow + lc * 16))[q]; }
+        if (mode == 3) {
+            float ss = 0.f;
+#pragma unroll
+            for (int q = 0; q < 4; q++) ss += y[q].x * y[q].x + y[q].y * y[q].y + y[q].z * y[q].z + y[q].w * y[q].w;
+            const float sc = rsqrtf(group8_sum(ss) / 128.0f + eps);
+#pragma unroll
+            for (int q = 0; q < 4; q++) {
+                const float4 w4 = ((const float4 *) (nw + (lc & 7) * 16))[q];
+                y[q].x = sc * y[q].x * w4.x; y[q].y = sc * y[q].y * w4.y; y[q].z = sc * y[q].z * w4.z; y[q].w = sc * y[q].w * w4.w;
+            }
+        }
+#pragma unroll
+        for (int q = 0; q < 4; q++) {
+            if (mode == 2) {
+                v[q].x *= 1.0f / (1.0f + expf(-y[q].x)); v[q].y *= 1.0f / (1.0f + expf(-y[q].y));
+                v[q].z *= 1.0f / (1.0f + expf(-y[q].z)); v[q].w *= 1.0f / (1.0f + expf(-y[q].w));
+            } else {
+                v[q].x = ggml_cuda_op_silu_single(v[q].x) * y[q].x; v[q].y = ggml_cuda_op_silu_single(v[q].y) * y[q].y;
+                v[q].z = ggml_cuda_op_silu_single(v[q].z) * y[q].z; v[q].w = ggml_cuda_op_silu_single(v[q].w) * y[q].w;
+            }
+        }
+    }
+    return rotate_regs(v, lane, b1, a2);
 }
 
 __global__ __launch_bounds__(32) void k_rot_f32(const float * __restrict__ X, float * __restrict__ Y, int K) {
@@ -657,13 +721,11 @@ __global__ __launch_bounds__(32) void k_rot_q8x(const float * __restrict__ X, in
     for (int i = 0; i < 8; i++) {
         const float x = w[i] * 0.0625f;
         float amax = fabsf(x);
-#pragma unroll
-        for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor(amax, o, 32));
+        amax = wave32_max(amax);
         const float d = amax / 127.0f;
         const int q = amax == 0.0f ? 0 : (int) roundf(x / d);
         float sq = (float) q;
-#pragma unroll
-        for (int o = 16; o > 0; o >>= 1) sq += __shfl_xor(sq, o, 32);
+        sq = wave32_sum(sq);
         Q[(size_t) n * K + sb * 256 + i * 32 + 16 * h + lc] = (int8_t) q;
         if (lane == 0) D[(size_t) n * (K / 32) + sb * 8 + i] = make_float2(d, d * sq);
     }
@@ -678,8 +740,7 @@ __global__ __launch_bounds__(1024) void k_rmsnorm_rot_q8x(const float * __restri
     const float * xr = X + (size_t) n * K + wave * 256 + lane * 8;
     const float4 x0 = *(const float4 *) xr, x1 = *(const float4 *) (xr + 4);
     float ss = x0.x * x0.x + x0.y * x0.y + x0.z * x0.z + x0.w * x0.w + x1.x * x1.x + x1.y * x1.y + x1.z * x1.z + x1.w * x1.w;
-#pragma unroll
-    for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor(ss, o, 32);
+    ss = wave32_sum(ss);
     if (lane == 0) part[wave] = ss;
     __syncthreads();
     float tot = 0.f;
@@ -701,13 +762,11 @@ __global__ __launch_bounds__(1024) void k_rmsnorm_rot_q8x(const float * __restri
     for (int i = 0; i < 8; i++) {
         const float x = w[i] * 0.0625f;
         float amax = fabsf(x);
-#pragma unroll
-        for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor(amax, o, 32));
+        amax = wave32_max(amax);
         const float d = amax / 127.0f;
         const int q = amax == 0.0f ? 0 : (int) roundf(x / d);
         float sq = (float) q;
-#pragma unroll
-        for (int o = 16; o > 0; o >>= 1) sq += __shfl_xor(sq, o, 32);
+        sq = wave32_sum(sq);
         Q[(size_t) n * K + wave * 256 + i * 32 + 16 * h + lc] = (int8_t) q;
         if (lane == 0) D[(size_t) n * (K / 32) + wave * 8 + i] = make_float2(d, d * sq);
     }
@@ -725,7 +784,8 @@ template <int NC, bool GATE, bool ROT = false>
 __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ S, float inv,
         const uint8_t * __restrict__ Wp2, const uint8_t * __restrict__ Wh2, const float * __restrict__ S2, float inv2,
         const int8_t * __restrict__ Xq, const float2 * __restrict__ Xd, float * __restrict__ dst, const float * __restrict__ xb, const float * __restrict__ gb,
-        int glu, int M, int K, int stride_dst, const float * __restrict__ Xf = nullptr, const float * __restrict__ Yf = nullptr) {
+        int glu, int M, int K, int stride_dst, const float * __restrict__ Xf = nullptr, const float * __restrict__ Yf = nullptr,
+        int rmode = 1, int ystride = 256, const float * __restrict__ Nw = nullptr, float neps = 0.f) {
     const int lane = threadIdx.x, r = lane & 15, h = lane >> 4, wv = threadIdx.y, ft = blockIdx.x, nsb = K / 256;
     // ROT: the activation is rotated + quantized here, per wave and per 256-block, instead of by a separate kernel (NC == 1)
     __shared__ __align__(16) int8_t rq[ROT ? MV_NW : 1][256];
@@ -755,18 +815,16 @@ __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__ 
             const uint4 * xq = (const uint4 *) (Xq + (size_t) j * K + sb * 256 + h * 128);
             const float4 * xd = (const float4 *) (Xd + (size_t) j * (K / 32) + sb * 8 + h * 4);
             if (ROT) {
-                const float8v wr = rotate_block(Xf + sb * 256, lane, rb1, ra2, Yf ? Yf + sb * 256 : nullptr);
+                const float8v wr = rotate_block(Xf + sb * 256, lane, rb1, ra2, Yf ? Yf + (size_t) sb * ystride : nullptr, rmode, Nw, neps);
 #pragma unroll
                 for (int i = 0; i < 8; i++) {
                     const float x = wr[i] * 0.0625f;
                     float amax = fabsf(x);
-#pragma unroll
-                    for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor(amax, o, 32));
+                    amax = wave32_max(amax);
                     const float d = amax / 127.0f;
                     const int q = amax == 0.0f ? 0 : (int) roundf(x / d);
                     float sq = (float) q;
-#pragma unroll
-                    for (int o = 16; o > 0; o >>= 1) sq += __shfl_xor(sq, o, 32);
+                    sq = wave32_sum(sq);
                     rq[wv][i * 32 + 16 * h + r] = (int8_t) q;
                     if (lane == 0) rd[wv][i] = make_float2(d, d * sq);
                 }
@@ -836,6 +894,7 @@ __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__ 
         }
     }
 }
+
 
 // ---------------------------------------------------------------------------------------------------------------- host glue
 int int4_mode() {
@@ -1098,7 +1157,7 @@ bool ggml_cuda_int4_rmsnorm_rot(ggml_backend_cuda_context & ctx, const ggml_tens
     return true;
 }
 
-void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion, const float * glu_x, const float * glu_y) {
+void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion, const float * glu_x, const float * glu_y, int mode, int ystride, const float * nw, float eps) {
     const int K = (int) src0->ne[0], M = (int) src0->ne[1], N = (int) (src1->ne[1] * src1->ne[2] * src1->ne[3]);
     GGML_ASSERT(N >= 1 && N <= 8 && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && src1->ne[0] == K);
     GGML_ASSERT(dst->type == GGML_TYPE_F32 && dst->ne[0] == M && ggml_is_contiguous(dst));
@@ -1118,7 +1177,9 @@ void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * 
     // single-consumer inputs (the ones whose producers are not shared with another matvec): rotate + quantize inside the matvec
     static const bool rot_ok = !getenv("GGML_MV_ROT") || atoi(getenv("GGML_MV_ROT")) != 0;
     const bool rot = rot_ok && N == 1 && !gate && (strstr(src0->name, "ffn_down") || strstr(src0->name, "ssm_out") || strstr(src0->name, "attn_output")) &&
-                     K % 256 == 0 && (K / 256) >= 1 && ((uintptr_t) (glu_x ? glu_x : (const float *) src1->data) & 15) == 0;
+                     K % 256 == 0 && (K / 256) >= 1 && ((uintptr_t) (glu_x ? glu_x : (const float *) src1->data) & 15) == 0 &&
+                     (!glu_y || ((uintptr_t) glu_y & 15) == 0) && (!nw || ((uintptr_t) nw & 15) == 0);
+    GGML_ASSERT(mode == 1 || rot);              // the other input modes exist only in the in-matvec rotation
     int8_t * xq_ptr; float2 * xd_ptr;
     ggml_cuda_pool_alloc<int8_t> xq_pool(ctx.pool());
     ggml_cuda_pool_alloc<float2> xd_pool(ctx.pool());
@@ -1147,7 +1208,7 @@ void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * 
     case NCV: if (gate) k_mv<NCV, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, g.Wp, g.Wh, g.S, inv2, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst); \
               else      k_mv<NCV, false><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, nullptr, nullptr, nullptr, 0.f, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst); break;
     if (rot) {
-        k_mv<1, false, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, nullptr, nullptr, nullptr, 0.f, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst, glu_x ? glu_x : (const float *) src1->data, glu_y);
+        k_mv<1, false, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, nullptr, nullptr, nullptr, 0.f, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst, glu_x ? glu_x : (const float *) src1->data, glu_y, mode, ystride, nw, eps);
         CUDA_CHECK(cudaGetLastError());
         return;
     }
@@ -1166,7 +1227,7 @@ void ggml_cuda_int4_rot_q8_1(const ggml_tensor *, void *, cudaStream_t) {}
 bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const float *, const float *, const float *) { return false; }
 bool ggml_cuda_int4_converted(const ggml_tensor *) { return false; }
 void ggml_cuda_int4_prepare(ggml_backend_cuda_context &, const ggml_cgraph *) {}
-void ggml_cuda_int4_matvec(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const ggml_cuda_mm_fusion_args_host *, const float *, const float *) {}
+void ggml_cuda_int4_matvec(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const ggml_cuda_mm_fusion_args_host *, const float *, const float *, int, int, const float *, float) {}
 void ggml_cuda_int4_forget(const void *, size_t) {}
 
 #endif

@@ -30,7 +30,9 @@ bool ggml_cuda_int4_converted(const ggml_tensor * src0);
 void ggml_cuda_int4_prepare(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph);
 // decode-sized matmul (<= 8 tokens) on converted weights: fused rotate+Q8 quantisation, then a matvec on the repacked layout; supports the
 // gate/bias/GLU fusion of mul_mat_vec_q
+// glu_x / glu_y: the matvec's input is built from these instead of src1 (rotation prologue, one token), by `mode`:
+//   1: silu(glu_x) * glu_y     2: glu_x * sigmoid(glu_y), glu_y read with ystride floats between 256-blocks     3: silu(glu_x) * (RMS norm over 128 of glu_y * nw)
 void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion,
-                            const float * glu_x = nullptr, const float * glu_y = nullptr);
+                            const float * glu_x = nullptr, const float * glu_y = nullptr, int mode = 1, int ystride = 256, const float * nw = nullptr, float eps = 0.f);
 // the device buffer [ptr, ptr+size) is going away: forget converted tensors inside it
 void ggml_cuda_int4_forget(const void * ptr, size_t size);

@@ -172,6 +172,10 @@ gated_delta_net_cuda(const float * q,
 }
 
 #if defined(GGML_USE_HIP)
+// decode (one token): the GDN alpha / beta projections (bf16 [K] rows, one per head) and their gate math are computed by the kernel itself from the normalized
+// f32 activation instead of by a skinny matmul launch of their own:  g = softplus(alpha.x + bias) * scl,  beta = sigmoid(beta.x)
+struct gdn_ab_args { const uint16_t * aw; const uint16_t * bw; const float * x; const float * bias; const float * scl; int K; };
+
 // RDNA (wave32), S_v == 128, scalar gate: a state column is split over two lanes (64 rows each), so a row reduction is one
 // lane exchange instead of five, and a wave owns 16 columns.  k/q of a token are staged per wave in LDS (double buffered).
 template <bool keep_rs_t>
@@ -183,7 +187,7 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
                      int64_t sq1, int64_t sq2, int64_t sq3, int64_t sv1, int64_t sv2, int64_t sv3,
                      int64_t sb1, int64_t sb2, int64_t sb3,
                      const uint3 neqk1_magic, const uint3 rq3_magic, float scale, int64_t state_slot_stride, int K,
-                     const float * __restrict__ rows_base, const int32_t * __restrict__ rows_ids, int64_t rows_stride, float l2eps) {
+                     const float * __restrict__ rows_base, const int32_t * __restrict__ rows_ids, int64_t rows_stride, float l2eps, const gdn_ab_args ab) {
     constexpr int S_v = 128, R = 64;
     const uint32_t h_idx    = blockIdx.x;
     const uint32_t sequence = blockIdx.y;
@@ -228,7 +232,34 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
     float v_nx = 0.f, beta_nx = 0.f, g_nx = 0.f;
     if (n_tokens > 0) {
         const int64_t gb0 = sequence * sb3 + h_idx * sb1;
-        v_nx = v[sequence * sv3 + h_idx * sv1 + col]; beta_nx = beta[gb0]; g_nx = g[gb0];
+        v_nx = v[sequence * sv3 + h_idx * sv1 + col];
+        if (ab.aw) {
+            const int tid = threadIdx.y * 32 + lane;
+            const uint16_t * ar = ab.aw + (size_t) h_idx * ab.K, * br = ab.bw + (size_t) h_idx * ab.K;
+            float sa = 0.f, sbt = 0.f;
+            for (int i = tid * 8; i < ab.K; i += 128 * 8) {
+                const uint4 aa = *(const uint4 *) (ar + i), bb = *(const uint4 *) (br + i);
+                const float4 x0 = *(const float4 *) (ab.x + i), x1 = *(const float4 *) (ab.x + i + 4);
+                const uint32_t au[4] = { aa.x, aa.y, aa.z, aa.w }, bu[4] = { bb.x, bb.y, bb.z, bb.w };
+                const float xs[8] = { x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w };
+#pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    sa  = fmaf(__uint_as_float(au[j] << 16), xs[2 * j], sa);  sa  = fmaf(__uint_as_float(au[j] & 0xFFFF0000u), xs[2 * j + 1], sa);
+                    sbt = fmaf(__uint_as_float(bu[j] << 16), xs[2 * j], sbt); sbt = fmaf(__uint_as_float(bu[j] & 0xFFFF0000u), xs[2 * j + 1], sbt);
+                }
+            }
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) { sa += __shfl_xor(sa, o, 32); sbt += __shfl_xor(sbt, o, 32); }
+            __shared__ float abr[4][2];
+            if (lane == 0) { abr[threadIdx.y][0] = sa; abr[threadIdx.y][1] = sbt; }
+            __syncthreads();
+            sa = (abr[0][0] + abr[1][0]) + (abr[2][0] + abr[3][0]); sbt = (abr[0][1] + abr[1][1]) + (abr[2][1] + abr[3][1]);
+            const float xb = sa + ab.bias[h_idx];
+            g_nx = (xb > 20.0f ? xb : logf(1.0f + expf(xb))) * ab.scl[h_idx];
+            beta_nx = 1.0f / (1.0f + expf(-sbt));
+        } else {
+            beta_nx = beta[gb0]; g_nx = g[gb0];
+        }
     }
 
     for (int t = 0; t < n_tokens; t++) {
@@ -712,7 +743,7 @@ static void launch_gated_delta_net(
         int64_t sb1,   int64_t sb2, int64_t sb3,
         int64_t neqk1, int64_t rq3,
         float scale, int64_t state_slot_stride, int K, cudaStream_t stream,
-        const float * rows_base = nullptr, const int32_t * rows_ids = nullptr, int64_t rows_stride = 0, float l2eps = -1.f) {
+        const float * rows_base = nullptr, const int32_t * rows_ids = nullptr, int64_t rows_stride = 0, float l2eps = -1.f, const gdn_ab_args ab = gdn_ab_args{}) {
     //TODO: Add chunked kernel for even faster pre-fill
     const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
     const int num_warps = 4;
@@ -751,7 +782,7 @@ static void launch_gated_delta_net(
                     ggml_cuda_kernel_launch(gated_delta_net_cols<keep_rs_t>, lp,
                         q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d, H,
                         n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-                        sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K, rows_base, rows_ids, rows_stride, l2eps);
+                        sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K, rows_base, rows_ids, rows_stride, l2eps, ab);
                     break;
                 }
             }
@@ -786,6 +817,28 @@ void ggml_cuda_gdn_fold_l2(const ggml_tensor * gdn, ggml_tensor * q_src, ggml_te
 }
 
 bool ggml_cuda_gdn_has_rows(const ggml_tensor * state_view);
+struct gdn_ab_fold { const ggml_tensor * aw; const ggml_tensor * bw; const ggml_tensor * x; const ggml_tensor * bias; const ggml_tensor * scl; };
+static std::unordered_map<const ggml_tensor *, gdn_ab_fold> g_gdn_ab;
+
+bool ggml_cuda_gdn_ab_ok(const ggml_tensor * gdn, const ggml_tensor * aw, const ggml_tensor * bw, const ggml_tensor * x) {
+#if defined(GGML_USE_HIP)
+    const ggml_tensor * v = gdn->src[2];
+    return v->ne[0] == 128 && v->ne[2] == 1 && v->ne[3] == 1 && gdn->src[3]->ne[0] == 1 && gdn->src[3]->ne[1] <= 128 && ggml_cuda_gdn_has_rows(gdn->src[5]) &&
+           aw->type == GGML_TYPE_BF16 && bw->type == GGML_TYPE_BF16 && x->type == GGML_TYPE_F32 && aw->ne[1] == v->ne[1] && bw->ne[1] == v->ne[1] &&
+           aw->ne[0] == x->ne[0] && bw->ne[0] == x->ne[0] && (x->ne[0] % 8) == 0 && ggml_nelements(x) == x->ne[0] && ggml_is_contiguous(aw) && ggml_is_contiguous(bw) &&
+           ggml_is_contiguous(x) && (((uintptr_t) aw->data | (uintptr_t) bw->data | (uintptr_t) x->data) & 15) == 0;
+#else
+    GGML_UNUSED(gdn); GGML_UNUSED(aw); GGML_UNUSED(bw); GGML_UNUSED(x);
+    return false;
+#endif
+}
+
+void ggml_cuda_gdn_fold_ab(const ggml_tensor * gdn, const ggml_tensor * aw, const ggml_tensor * bw, const ggml_tensor * x, const ggml_tensor * bias, const ggml_tensor * scl) {
+    std::lock_guard<std::mutex> lk(g_gdn_rows_mu);
+    g_gdn_ab[gdn] = { aw, bw, x, bias, scl };
+}
+
+bool ggml_cuda_gdn_has_rows(const ggml_tensor * state_view);
 static const ggml_tensor * gdn_rows_lookup(const ggml_tensor * state_view) {
     std::lock_guard<std::mutex> lk(g_gdn_rows_mu);
     auto it = g_gdn_rows.find(state_view);
@@ -801,10 +854,16 @@ static void ggml_cuda_op_gated_delta_net_impl(
     ggml_tensor * src_beta  = dst->src[4];
     ggml_tensor * src_state = dst->src[5];
     float l2eps = -1.f;
+    gdn_ab_args ab = {};
     {
         std::lock_guard<std::mutex> lk(g_gdn_rows_mu);
         auto it = g_gdn_l2.find(dst);
         if (it != g_gdn_l2.end()) { src_q = it->second.q; src_k = it->second.k; l2eps = it->second.eps; }
+        auto ia = g_gdn_ab.find(dst);
+        if (ia != g_gdn_ab.end()) {
+            ab = { (const uint16_t *) ia->second.aw->data, (const uint16_t *) ia->second.bw->data, (const float *) ia->second.x->data,
+                   (const float *) ia->second.bias->data, (const float *) ia->second.scl->data, (int) ia->second.x->ne[0] };
+        }
     }
 
     GGML_TENSOR_LOCALS(int64_t, neq, src_q, ne);
@@ -897,11 +956,11 @@ static void ggml_cuda_op_gated_delta_net_impl(
         if (keep_rs) {
             launch_gated_delta_net<false, true>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
                 S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream, rows_base, rows_ids, rows_stride, l2eps);
+                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream, rows_base, rows_ids, rows_stride, l2eps, ab);
         } else {
             launch_gated_delta_net<false, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
                 S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream, rows_base, rows_ids, rows_stride, l2eps);
+                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream, rows_base, rows_ids, rows_stride, l2eps, ab);
         }
     }
 }
@@ -921,4 +980,5 @@ void ggml_cuda_gdn_reset() {
     std::lock_guard<std::mutex> lk(g_gdn_rows_mu);
     g_gdn_rows.clear();
     g_gdn_l2.clear();
+    g_gdn_ab.clear();
 }

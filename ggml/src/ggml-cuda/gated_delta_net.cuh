@@ -20,3 +20,8 @@ void ggml_cuda_gdn_skip_gather(const ggml_tensor * state_view, const ggml_tensor
 void ggml_cuda_gdn_fold_l2(const ggml_tensor * gdn, ggml_tensor * q_src, ggml_tensor * k_src, float eps);
 bool ggml_cuda_gdn_has_rows(const ggml_tensor * state_view);
 void ggml_cuda_gdn_reset();
+
+// decode, one token: the alpha / beta projections (bf16 [K, H] each, rows = heads) and the gate math feeding `gdn` are computed by its kernel from the f32 activation x:
+//   g = softplus(alpha.x + bias) * scl,  beta = sigmoid(beta.x).  ggml_cuda_gdn_ab_ok tells whether `gdn`'s kernel supports it.
+bool ggml_cuda_gdn_ab_ok(const ggml_tensor * gdn, const ggml_tensor * aw, const ggml_tensor * bw, const ggml_tensor * x);
+void ggml_cuda_gdn_fold_ab(const ggml_tensor * gdn, const ggml_tensor * aw, const ggml_tensor * bw, const ggml_tensor * x, const ggml_tensor * bias, const ggml_tensor * scl);

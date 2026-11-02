@@ -3272,10 +3272,12 @@ static bool ggml_cuda_match_conv_cluster(const ggml_cgraph * cg, int ci, ggml_cu
 static std::mutex g_done_mu;
 static std::unordered_set<const ggml_tensor *> g_conv_gathers;     // GET_ROWS nodes elided because their conv cluster reads the cache itself
 static std::unordered_set<const ggml_tensor *> g_done_nodes;       // nodes already computed by an earlier fused kernel
+struct ggml_cuda_hnorm { const float * x; const float * w; float eps; };
+static std::unordered_map<const ggml_tensor *, ggml_cuda_hnorm> g_hnorm;   // GDN per-head RMS norm * weight outputs applied by the ssm_out matvec's rotation instead
 
 // tensor addresses are reused from one graph to the next: forget everything the fusions registered before a new graph is evaluated
 static void ggml_cuda_fuse_reset() {
-    { std::lock_guard<std::mutex> lk(g_done_mu); g_conv_gathers.clear(); g_done_nodes.clear(); }
+    { std::lock_guard<std::mutex> lk(g_done_mu); g_conv_gathers.clear(); g_done_nodes.clear(); g_hnorm.clear(); }
     ggml_cuda_gdn_reset();
 }
 
@@ -3416,6 +3418,26 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                             for (int j = bj + 1; j < cgraph->n_nodes && j < bj + 4; j++) {
                                 if (cgraph->nodes[j]->op == GGML_OP_UNARY && ggml_get_unary_op(cgraph->nodes[j]) == GGML_UNARY_OP_SIGMOID) { bsig = cgraph->nodes[j]; break; }
                                 if (cgraph->nodes[j]->op != GGML_OP_RESHAPE) { break; }
+                            }
+                            // one token: neither projection gets a kernel, the GDN kernel computes both (and their gates) from the normalized activation
+                            if (bsig && ggml_nelements(bsig) == ggml_nelements(mu) && bsig->type == GGML_TYPE_F32 && ggml_is_contiguous(bsig) && ggml_node_has_n_uses(cgraph, bj, 1) &&
+                                node->src[1]->ne[1] * node->src[1]->ne[2] * node->src[1]->ne[3] == 1) {
+                                static const bool ab_ok = !getenv("GGML_GDN_AB") || atoi(getenv("GGML_GDN_AB")) != 0;
+                                const ggml_tensor * gd = nullptr;
+                                for (int q = bj + 1; ab_ok && q < cgraph->n_nodes && q < bj + 24; q++) {
+                                    if (cgraph->nodes[q]->op == GGML_OP_GATED_DELTA_NET) { gd = cgraph->nodes[q]; break; }
+                                }
+                                if (gd && gd->src[4] == bsig && gd->src[3]->op == GGML_OP_RESHAPE && gd->src[3]->src[0] == mu && ggml_cuda_gdn_ab_ok(gd, node->src[0], bm->src[0], node->src[1]) &&
+                                    bm->src[1] == node->src[1]) {
+                                    int users = 0;
+                                    for (int q = i + 1; q < cgraph->n_nodes; q++) { for (int sidx = 0; sidx < GGML_MAX_SRC; sidx++) { users += cgraph->nodes[q]->src[sidx] == mu || cgraph->nodes[q]->src[sidx] == gd->src[3] || cgraph->nodes[q]->src[sidx] == bsig; } }
+                                    if (users == 3) {      // the GDN reshape of mu, the GDN node (gate), the GDN node (beta)
+                                        ggml_cuda_gdn_fold_ab(gd, node->src[0], bm->src[0], node->src[1], bias, scl);
+                                        std::lock_guard<std::mutex> lk(g_done_mu);
+                                        g_done_nodes.insert(bm); g_done_nodes.insert(bsig);
+                                        return 4;
+                                    }
+                                }
                             }
                             if (bsig && ggml_nelements(bsig) == ggml_nelements(mu) && bsig->type == GGML_TYPE_F32 && ggml_is_contiguous(bsig) && ggml_node_has_n_uses(cgraph, bj, 1) &&
                                 ggml_cuda_mul_mat_skinny_pair_rdna3(*cuda_ctx, node->src[0], bm->src[0], node->src[1], mu, 2, (const float *) bias->data, (const float *) scl->data, bsig, 1)) {
@@ -4107,11 +4129,68 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         return fused_node_count - 1;
     }
 
+    // attention output gate: CONT(gate view) -> sigmoid -> MUL(attention, sigmoid) feeding a rotated INT4 matvec (one token): the gate is applied while the matvec rotates
+    if (node->op == GGML_OP_CONT && i + 3 < cgraph->n_nodes) {
+        const ggml_tensor * sg = cgraph->nodes[i + 1], * mu = cgraph->nodes[i + 2], * mm = cgraph->nodes[i + 3];
+        const ggml_tensor * gv = node->src[0];
+        if (sg->op == GGML_OP_UNARY && ggml_get_unary_op(sg) == GGML_UNARY_OP_SIGMOID && sg->src[0] == node && mu->op == GGML_OP_MUL && (mu->src[0] == sg || mu->src[1] == sg) &&
+            mm->op == GGML_OP_MUL_MAT && mm->src[1] == mu && ggml_cuda_int4_rotated(mm->src[0]) && ggml_cuda_int4_converted(mm->src[0]) &&
+            ggml_nelements(mu) == mm->src[0]->ne[0] && ggml_nelements(mu) == ggml_nelements(node) && gv && gv->type == GGML_TYPE_F32 && node->type == GGML_TYPE_F32 &&
+            gv->ne[0] == 256 && gv->nb[0] == sizeof(float) && gv->nb[1] % (16 * sizeof(float)) == 0 && gv->ne[2] == 1 && gv->ne[3] == 1 && (mm->src[0]->ne[0] % 256) == 0 &&
+            (uintptr_t) gv->data % 16 == 0 && ggml_node_has_n_uses(cgraph, i, 1) && ggml_node_has_n_uses(cgraph, i + 1, 1) && ggml_node_has_n_uses(cgraph, i + 2, 1)) {
+            const ggml_tensor * att = mu->src[0] == sg ? mu->src[1] : mu->src[0];
+            static const bool gate_ok = !getenv("GGML_MV_GATE") || atoi(getenv("GGML_MV_GATE")) != 0;
+            if (gate_ok && att->type == GGML_TYPE_F32 && ggml_is_contiguous(att) && ggml_nelements(att) == ggml_nelements(mu) && (uintptr_t) att->data % 16 == 0 &&
+                mm->src[1]->ne[1] * mm->src[1]->ne[2] * mm->src[1]->ne[3] == 1 && ggml_nelements(mu) == (int64_t) gv->ne[0] * gv->ne[1]) {
+                const float * res = nullptr; ggml_tensor * add = nullptr; const ggml_tensor * res_t = nullptr;
+                const int r = ggml_cuda_int4_residual_add(cgraph, i + 3, &res, &add, &res_t);
+                ggml_cuda_mm_fusion_args_host fusion_args;
+                fusion_args.x_bias = r ? res_t : nullptr;
+                ggml_cuda_int4_matvec(*cuda_ctx, mm->src[0], mm->src[1], r ? add : cgraph->nodes[i + 3], r ? &fusion_args : nullptr, (const float *) att->data, (const float *) gv->data,
+                                      2, (int) (gv->nb[1] / sizeof(float)));
+                return 3 + r;
+            }
+        }
+    }
+
+    // GDN output: RMS norm (128) * weight, then silu(z) * norm feeding ssm_out (one token): the matvec's rotation applies the norm, no kernel here
+    if (node->op == GGML_OP_RMS_NORM && ggml_cuda_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL }, {}) && node->src[0]->ne[0] == 128 && node->src[0]->ne[2] == 1 && node->src[0]->ne[3] == 1) {
+        ggml_tensor * nm = cgraph->nodes[i + 1];
+        const ggml_tensor * x = node->src[0];
+        const ggml_tensor * wt = nm->src[0] == node ? nm->src[1] : nm->src[0];
+        static const bool hn_ok = !getenv("GGML_MV_HNORM") || atoi(getenv("GGML_MV_HNORM")) != 0;
+        if (hn_ok && x->type == GGML_TYPE_F32 && ggml_is_contiguous(x) && wt->type == GGML_TYPE_F32 && ggml_is_contiguous(wt) && ggml_nelements(wt) == 128 && nm->type == GGML_TYPE_F32 &&
+            ggml_is_contiguous(nm) && ((uintptr_t) x->data | (uintptr_t) wt->data) % 16 == 0) {
+            for (int j = i + 2; j < cgraph->n_nodes && j < i + 14; j++) {
+                const ggml_tensor * un = cgraph->nodes[j];
+                if (un->op != GGML_OP_UNARY || ggml_get_unary_op(un) != GGML_UNARY_OP_SILU) { continue; }
+                if (!ggml_cuda_can_fuse(cgraph, j, { GGML_OP_UNARY, GGML_OP_MUL }, { GGML_UNARY_OP_SILU }) || j + 2 >= cgraph->n_nodes) { break; }
+                const ggml_tensor * mul = cgraph->nodes[j + 1];
+                const ggml_tensor * other = mul->src[0] == un ? mul->src[1] : mul->src[0];
+                const ggml_tensor * mm = cgraph->nodes[j + 2];
+                if (mm->op == GGML_OP_RESHAPE && mm->src[0] == mul && j + 3 < cgraph->n_nodes) { mul = mm; mm = cgraph->nodes[j + 3]; }
+                int users = 0;
+                for (int q = i + 2; q < cgraph->n_nodes; q++) { for (int sidx = 0; sidx < GGML_MAX_SRC; sidx++) { users += cgraph->nodes[q]->src[sidx] == nm; } }
+                if (other == nm && users == 1 && un->src[0]->type == GGML_TYPE_F32 && ggml_is_contiguous(un->src[0]) && ggml_are_same_shape(un->src[0], nm) && ggml_node_has_n_uses(cgraph, j + 1, 1) &&
+                    mm->op == GGML_OP_MUL_MAT && mm->src[1] == mul && ggml_cuda_int4_rotated(mm->src[0]) && ggml_cuda_int4_converted(mm->src[0]) &&
+                    mm->src[1]->ne[1] * mm->src[1]->ne[2] * mm->src[1]->ne[3] == 1 && mm->src[0]->ne[0] == ggml_nelements(nm) && (mm->src[0]->ne[0] % 256) == 0 &&
+                    (uintptr_t) un->src[0]->data % 16 == 0 && strstr(mm->src[0]->name, "ssm_out")) {
+                    float eps; memcpy(&eps, node->op_params, sizeof(float));
+                    std::lock_guard<std::mutex> lk(g_done_mu);
+                    g_hnorm[nm] = { (const float *) x->data, (const float *) wt->data, eps };
+                    return 1;
+                }
+                break;
+            }
+        }
+    }
+
     // silu(a) * b (SWIGLU, or SILU + MUL) feeding a rotated INT4 GEMM: apply it while the GEMM packs its activations
     if (node->op == GGML_OP_GLU || node->op == GGML_OP_UNARY) {
         const ggml_tensor * mm = nullptr;
         const float * xa = nullptr, * xb = nullptr;
         int extra = 0;
+        ggml_cuda_hnorm hn = {}; bool hn_used = false;
         if (node->op == GGML_OP_GLU) {
             if (ggml_get_glu_op(node) == GGML_GLU_OP_SWIGLU && node->src[1] && ggml_get_op_params_i32(node, 1) == 0 && i + 1 < cgraph->n_nodes &&
                 node->src[0]->type == GGML_TYPE_F32 && node->src[1]->type == GGML_TYPE_F32 && ggml_is_contiguous(node->src[0]) &&
@@ -4125,6 +4204,7 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
             if (node->src[0]->type == GGML_TYPE_F32 && other->type == GGML_TYPE_F32 && ggml_is_contiguous(node->src[0]) && ggml_is_contiguous(other) &&
                 ggml_are_same_shape(node->src[0], other) && ggml_node_has_n_uses(cgraph, i + 1, 1)) {
                 mm = cgraph->nodes[i + 2]; xa = (const float *) node->src[0]->data; xb = (const float *) other->data; extra = 2;
+                { std::lock_guard<std::mutex> lk(g_done_mu); auto it = g_hnorm.find(other); if (it != g_hnorm.end()) { hn = it->second; hn_used = true; xb = it->second.x; } }
                 if (mm->op == GGML_OP_RESHAPE && mm->src[0] == mul && i + 3 < cgraph->n_nodes) {
                     mul = mm; mm = cgraph->nodes[i + 3]; extra = 3;      // the GDN output goes through a reshape before ssm_out
                 }
@@ -4138,9 +4218,11 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
             const int r = ggml_cuda_int4_residual_add(cgraph, i + extra, &res, &add, &res_t);
             ggml_cuda_mm_fusion_args_host fusion_args;
             fusion_args.x_bias = r ? res_t : nullptr;
-            ggml_cuda_int4_matvec(*cuda_ctx, mm->src[0], mm->src[1], r ? add : cgraph->nodes[i + extra], r ? &fusion_args : nullptr, xa, xb);
+            ggml_cuda_int4_matvec(*cuda_ctx, mm->src[0], mm->src[1], r ? add : cgraph->nodes[i + extra], r ? &fusion_args : nullptr, xa, xb,
+                                  hn_used ? 3 : 1, 256, hn.w, hn.eps);
             return extra + r;
         }
+        GGML_ASSERT(!hn_used);          // the per-head norm was skipped on the promise that this matvec applies it
         if (mm && mm->op == GGML_OP_MUL_MAT && ggml_cuda_int4_rotated(mm->src[0]) && ggml_cuda_int4_converted(mm->src[0]) &&
             mm->src[1]->ne[1] * mm->src[1]->ne[2] * mm->src[1]->ne[3] > MMVQ_MAX_BATCH_SIZE &&
             true) {
