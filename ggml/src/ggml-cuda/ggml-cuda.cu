@@ -30,6 +30,7 @@
 #include "ggml-cuda/im2col.cuh"
 #include "ggml-cuda/mmf.cuh"
 #include "ggml-cuda/mmq.cuh"
+#include "ggml-cuda/int4-wmma.cuh"
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
 #include "ggml-cuda/norm.cuh"
@@ -1809,7 +1810,29 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
     return use_mul_mat_vec_q;
 }
 
+static void ggml_cuda_mul_mat_core(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst);
+
+// Rotated INT4 weights (GGML_INT4, experimental): run the INT4 WMMA kernel for prefill-sized batches, otherwise rotate the
+// activations and fall through to the regular quantized path.
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    if (ggml_cuda_int4_rotated(src0)) {
+        if (ggml_cuda_int4_mul_mat(ctx, src0, src1, dst)) {
+            return;
+        }
+        ggml_cuda_pool_alloc<float> rot(ctx.pool(), ggml_nelements(src1));
+        ggml_cuda_int4_rotate(ctx, src1, rot.get());
+        ggml_tensor src1_rot = *src1;
+        src1_rot.data = rot.get();
+        ggml_tensor * saved = dst->src[1];
+        dst->src[1] = &src1_rot;
+        ggml_cuda_mul_mat_core(ctx, src0, &src1_rot, dst);
+        dst->src[1] = saved;
+        return;
+    }
+    ggml_cuda_mul_mat_core(ctx, src0, src1, dst);
+}
+
+static void ggml_cuda_mul_mat_core(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     GGML_TENSOR_BINARY_OP_LOCALS
 
     const int32_t hint = ggml_get_op_params_i32(dst, 1);
