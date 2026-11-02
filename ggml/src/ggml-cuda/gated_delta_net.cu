@@ -346,6 +346,17 @@ gdn_chunk_prep(const float * __restrict__ q, const float * __restrict__ k, const
     const float * vb = v + seq * sv3 + (int64_t) h * sv1;
     const int64_t tok0 = (int64_t) c * C;
 
+    // operand columns of both panel passes (value / key column 16 w + lc of every token), requested up front to hide their latency
+    float lv[2][4][8];
+#pragma unroll
+    for (int p = 0; p < 4; p++)
+#pragma unroll
+        for (int i = 0; i < 8; i++) {
+            const int64_t tk = std::min(tok0 + 16 * p + 2 * i + hh, n_tokens - 1);
+            lv[0][p][i] = vb[tk * sv2 + 16 * w + lc];
+            lv[1][p][i] = kb[tk * sq2 + 16 * w + lc];
+        }
+
     {
         float4 kv[8], qv[8];
 #pragma unroll
@@ -437,26 +448,14 @@ gdn_chunk_prep(const float * __restrict__ q, const float * __restrict__ k, const
     // pass 0: U (value columns), pass 1: Wm (key columns, stored negated)
     auto run_pass = [&](auto tag) {
         constexpr bool isw = decltype(tag)::value;
-        const float * src = isw ? kb : vb;
-        const int64_t s2 = isw ? sq2 : sv2;
         __shared__ float rsc[C];
         if (tid < C) { rsc[tid] = tok0 + tid < n_tokens ? bet[tid] * (isw ? eg[tid] : 1.f) : 0.f; }
         __syncthreads();
         gdn_f8 bacc[4];
-        {
-            float lv[4][8];
 #pragma unroll
-            for (int p = 0; p < 4; p++)
+        for (int p = 0; p < 4; p++)
 #pragma unroll
-                for (int i = 0; i < 8; i++) {
-                    const int row = 16 * p + 2 * i + hh;
-                    lv[p][i] = src[std::min(tok0 + row, n_tokens - 1) * s2 + 16 * w + lc];
-                }
-#pragma unroll
-            for (int p = 0; p < 4; p++)
-#pragma unroll
-                for (int i = 0; i < 8; i++) { bacc[p][i] = lv[p][i] * rsc[16 * p + 2 * i + hh]; }
-        }
+            for (int i = 0; i < 8; i++) { bacc[p][i] = lv[isw ? 1 : 0][p][i] * rsc[16 * p + 2 * i + hh]; }
 #pragma unroll
         for (int p = 0; p < 4; p++) {
             gdn_f8 acc = bacc[p];
@@ -549,19 +548,28 @@ gdn_chunk_scan(const _Float16 * __restrict__ wm, const float * __restrict__ uu, 
         const _Float16 * wmc = wm + id * C * D, * qgc = qg + id * C * D, * kdc = kdt + id * C * D, * ppc = pp + id * C * C;
         const float * uc = uu + id * C * D;
 
-        // delta = U - Wm S0   (Wm is stored negated)
-        gdn_f8 ad[NT];
+        // delta = U - Wm S0   (Wm is stored negated), and the state half of the output, Qg S0, from the same S0 fragments
+        gdn_f8 ad[NT], ao[NT];
 #pragma unroll
-        for (int nt = 0; nt < NT; nt++)
+        for (int nt = 0; nt < NT; nt++) {
+            ao[nt] = gdn_f8{0, 0, 0, 0, 0, 0, 0, 0};
 #pragma unroll
             for (int i = 0; i < 8; i++) { ad[nt][i] = uc[(16 * w + 2 * i + hh) * D + col0 + 16 * nt + lc]; }
+        }
 #pragma unroll
         for (int ks = 0; ks < 8; ks++) {
-            const gdn_h16 a = gdn_ld16(wmc + (16 * w + lc) * D + 16 * ks);
+            const gdn_h16 a  = gdn_ld16(wmc + (16 * w + lc) * D + 16 * ks);
+            const gdn_h16 aq = gdn_ld16(qgc + (16 * w + lc) * D + 16 * ks);
 #pragma unroll
             for (int nt = 0; nt < NT; nt++) {
-                ad[nt] = gdn_wmma(a, gdn_ld16(&st[cur][16 * nt + lc][16 * ks]), ad[nt]);
-                if constexpr (SPLIT) { ad[nt] = gdn_wmma(a, gdn_ld16(&stl[cur][16 * nt + lc][16 * ks]), ad[nt]); }
+                const gdn_h16 b = gdn_ld16(&st[cur][16 * nt + lc][16 * ks]);
+                ad[nt] = gdn_wmma(a, b, ad[nt]);
+                ao[nt] = gdn_wmma(aq, b, ao[nt]);
+                if constexpr (SPLIT) {
+                    const gdn_h16 bl = gdn_ld16(&stl[cur][16 * nt + lc][16 * ks]);
+                    ad[nt] = gdn_wmma(a, bl, ad[nt]);
+                    ao[nt] = gdn_wmma(aq, bl, ao[nt]);
+                }
             }
         }
 #pragma unroll
@@ -575,18 +583,6 @@ gdn_chunk_scan(const _Float16 * __restrict__ wm, const float * __restrict__ uu, 
         __syncthreads();
 
         // out = scale (Qg S0 + P delta)
-        gdn_f8 ao[NT];
-#pragma unroll
-        for (int nt = 0; nt < NT; nt++) { ao[nt] = gdn_f8{0, 0, 0, 0, 0, 0, 0, 0}; }
-#pragma unroll
-        for (int ks = 0; ks < 8; ks++) {
-            const gdn_h16 a = gdn_ld16(qgc + (16 * w + lc) * D + 16 * ks);
-#pragma unroll
-            for (int nt = 0; nt < NT; nt++) {
-                ao[nt] = gdn_wmma(a, gdn_ld16(&st[cur][16 * nt + lc][16 * ks]), ao[nt]);
-                if constexpr (SPLIT) { ao[nt] = gdn_wmma(a, gdn_ld16(&stl[cur][16 * nt + lc][16 * ks]), ao[nt]); }
-            }
-        }
 #pragma unroll
         for (int ks = 0; ks < 4; ks++) {
             if (ks > w) { break; }
@@ -650,7 +646,7 @@ gdn_chunk_scan(const _Float16 * __restrict__ wm, const float * __restrict__ uu, 
 
 } // namespace
 
-// returns false when the chunked path does not apply
+// returns false when the chunked path does not apply (needs RDNA3 WMMA, S_v == 128, enough tokens)
 static bool gdn_chunk_launch(ggml_backend_cuda_context & ctx,
         const float * q_d, const float * k_d, const float * v_d, const float * g_d, const float * b_d,
         const float * s_d, float * dst_d, float * state_d,
@@ -659,8 +655,8 @@ static bool gdn_chunk_launch(ggml_backend_cuda_context & ctx,
         int64_t sb1, int64_t sb2, int64_t sb3, int64_t neqk1, int64_t rq3, float scale, cudaStream_t stream) {
     static const int mode    = getenv("GGML_GDN_CHUNK") ? atoi(getenv("GGML_GDN_CHUNK")) : 1;       // 0 off, 1 f16, 2 f16 + residual
     static const int min_tok = getenv("GGML_GDN_CHUNK_MIN") ? atoi(getenv("GGML_GDN_CHUNK_MIN")) : 64;
-    static const int nt_sel  = getenv("GGML_GDN_NT") ? atoi(getenv("GGML_GDN_NT")) : 2;
-    if (mode == 0 || S_v != GDN_D || n_tokens < min_tok || ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size != 32) {
+    static const int nt_sel  = getenv("GGML_GDN_NT") ? atoi(getenv("GGML_GDN_NT")) : 1;
+    if (mode == 0 || S_v != GDN_D || n_tokens < min_tok || !GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[ggml_cuda_get_device()].cc)) {
         return false;
     }
     constexpr int C = GDN_C, D = GDN_D;
