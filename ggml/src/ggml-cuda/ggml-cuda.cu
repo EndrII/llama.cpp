@@ -3235,6 +3235,33 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     ggml_tensor * node = cgraph->nodes[i];
 
+    // GDN gates: skinny bf16 matmul -> reshape -> sigmoid, or -> reshape -> add(bias) -> softplus -> mul(scale), folded into the matmul epilogue
+    if (node->op == GGML_OP_MUL_MAT && node->src[0]->type == GGML_TYPE_BF16 && node->src[0]->ne[1] <= 32 && node->src[1]->type == GGML_TYPE_F32 &&
+        i + 4 < cgraph->n_nodes && ggml_node_has_n_uses(cgraph, i, 1)) {
+        const ggml_tensor * m1 = cgraph->nodes[i + 1];
+        ggml_tensor * n2 = cgraph->nodes[i + 2];
+        if (m1->op == GGML_OP_RESHAPE && m1->src[0] == node) {
+            if (n2->op == GGML_OP_UNARY && ggml_get_unary_op(n2) == GGML_UNARY_OP_SIGMOID && n2->src[0] == m1 && n2->type == GGML_TYPE_F32 &&
+                ggml_nelements(n2) == ggml_nelements(node) && ggml_is_contiguous(n2)) {
+                if (ggml_cuda_mul_mat_skinny_rdna3(*cuda_ctx, node->src[0], node->src[1], n2, 1, nullptr, nullptr)) { return 2; }
+            } else if (n2->op == GGML_OP_ADD && (n2->src[0] == m1 || n2->src[1] == m1) && ggml_node_has_n_uses(cgraph, i + 2, 1)) {
+                ggml_tensor * sp = cgraph->nodes[i + 3];
+                ggml_tensor * mu = cgraph->nodes[i + 4];
+                const ggml_tensor * bias = n2->src[0] == m1 ? n2->src[1] : n2->src[0];
+                if (sp->op == GGML_OP_UNARY && ggml_get_unary_op(sp) == GGML_UNARY_OP_SOFTPLUS && sp->src[0] == n2 && ggml_node_has_n_uses(cgraph, i + 3, 1) &&
+                    mu->op == GGML_OP_MUL && (mu->src[0] == sp || mu->src[1] == sp)) {
+                    const ggml_tensor * scl = mu->src[0] == sp ? mu->src[1] : mu->src[0];
+                    const int64_t M = node->src[0]->ne[1];
+                    if (bias->type == GGML_TYPE_F32 && scl->type == GGML_TYPE_F32 && ggml_nelements(bias) == M && ggml_nelements(scl) == M &&
+                        ggml_is_contiguous(bias) && ggml_is_contiguous(scl) && mu->type == GGML_TYPE_F32 && ggml_is_contiguous(mu) &&
+                        ggml_nelements(mu) == ggml_nelements(node) && n2->type == GGML_TYPE_F32) {
+                        if (ggml_cuda_mul_mat_skinny_rdna3(*cuda_ctx, node->src[0], node->src[1], mu, 2, (const float *) bias->data, (const float *) scl->data)) { return 4; }
+                    }
+                }
+            }
+        }
+    }
+
     // gated_delta_net -> cpy: scatter recurrent-state snapshots into the cache
     if (node->op == GGML_OP_GATED_DELTA_NET) {
         ggml_cuda_gated_delta_net_fused_cache fused_state_cpy;

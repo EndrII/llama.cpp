@@ -24,7 +24,8 @@ __device__ __forceinline__ uint32_t sk_bf16_bits(float f) {      // round to nea
     return (b + 0x7FFFu + ((b >> 16) & 1u)) >> 16;
 }
 
-__global__ void __launch_bounds__(SK_W * 32) sk_kernel(const __bf16 * __restrict__ W, const float * __restrict__ X, float * __restrict__ out, int M, int N, int K) {
+__global__ void __launch_bounds__(SK_W * 32) sk_kernel(const __bf16 * __restrict__ W, const float * __restrict__ X, float * __restrict__ out, int M, int N, int K,
+                                                   int epi, const float * __restrict__ bias, const float * __restrict__ scl) {
     const int tid = threadIdx.x, w = tid >> 5, lane = tid & 31, hh = lane >> 4, lc = lane & 15;
     const int mt_n = M / 16;
     const int64_t t0 = (int64_t) blockIdx.x * 16;
@@ -92,6 +93,8 @@ __global__ void __launch_bounds__(SK_W * 32) sk_kernel(const __bf16 * __restrict
             float sum = 0.f;
 #pragma unroll
             for (int q = 0; q < SK_W; q++) { sum += red[q][r][c]; }
+            if (epi == 1) { sum = 1.0f / (1.0f + expf(-sum)); }                                           // sigmoid
+            else if (epi == 2) { const float xb = sum + bias[c]; sum = (xb > 20.0f ? xb : logf(1.0f + expf(xb))) * scl[c]; }   // softplus(x + bias) * scale
             out[t * M + c] = sum;
         }
     }
@@ -99,7 +102,8 @@ __global__ void __launch_bounds__(SK_W * 32) sk_kernel(const __bf16 * __restrict
 
 } // namespace
 
-bool ggml_cuda_mul_mat_skinny_rdna3(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+bool ggml_cuda_mul_mat_skinny_rdna3(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst,
+                                    int epi, const float * bias, const float * scl) {
     static const bool enabled = !getenv("GGML_MM_SKINNY") || atoi(getenv("GGML_MM_SKINNY")) != 0;
     if (!enabled || !GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[ctx.device].cc)) { return false; }
     if (src0->type != GGML_TYPE_BF16 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) { return false; }
@@ -107,13 +111,13 @@ bool ggml_cuda_mul_mat_skinny_rdna3(ggml_backend_cuda_context & ctx, const ggml_
     if (M > 16 * SK_MAXMT || M % 16 || K % (16 * SK_W) || N <= 8 || src0->ne[2] != 1 || src0->ne[3] != 1 || src1->ne[0] != K) { return false; }
     if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst) || dst->ne[0] != M || ggml_nelements(dst) != N * M) { return false; }
     if (((uintptr_t) src0->data & 15) || ((uintptr_t) src1->data & 15)) { return false; }
-    sk_kernel<<<dim3((unsigned) ((N + 15) / 16)), SK_W * 32, 0, ctx.stream()>>>((const __bf16 *) src0->data, (const float *) src1->data, (float *) dst->data, (int) M, (int) N, (int) K);
+    sk_kernel<<<dim3((unsigned) ((N + 15) / 16)), SK_W * 32, 0, ctx.stream()>>>((const __bf16 *) src0->data, (const float *) src1->data, (float *) dst->data, (int) M, (int) N, (int) K, epi, bias, scl);
     CUDA_CHECK(cudaGetLastError());
     return true;
 }
 
 #else
 
-bool ggml_cuda_mul_mat_skinny_rdna3(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *) { return false; }
+bool ggml_cuda_mul_mat_skinny_rdna3(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, int, const float *, const float *) { return false; }
 
 #endif // GGML_USE_HIP
