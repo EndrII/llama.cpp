@@ -1283,6 +1283,14 @@ void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * 
         CUDA_CHECK(cudaGetLastError());
         return;
     }
+    if (N == 8 && gate) {      // 8 columns with the gate need more than 256 VGPRs (the kernel would spill): two launches of 4
+        for (int half = 0; half < 2; half++) {
+            k_mv<4, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, g.Wp, g.Wh, g.S, inv2, xq_ptr + (size_t) half * 4 * K, xd_ptr + (size_t) half * 4 * (K / 32), (float *) dst->data + (size_t) half * 4 * stride_dst,
+                                                    xb ? xb + (size_t) half * 4 * stride_dst : nullptr, gb ? gb + (size_t) half * 4 * stride_dst : nullptr, glu, M, K, stride_dst);
+        }
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
     switch (N) { MV_CASE(1) MV_CASE(2) MV_CASE(3) MV_CASE(4) MV_CASE(5) MV_CASE(6) MV_CASE(7) MV_CASE(8) }
 #undef MV_CASE
     CUDA_CHECK(cudaGetLastError());
