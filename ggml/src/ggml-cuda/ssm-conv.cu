@@ -206,16 +206,18 @@ void ggml_cuda_op_ssm_conv(ggml_backend_cuda_context & ctx, ggml_tensor * dst, g
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
-// Decode (<= 8 tokens) conv cluster of a GDN layer in one kernel:  GET_ROWS(conv state) + CONCAT(state, qkv^T) + CPY(last d_conv-1 columns -> cache)
-// + SSM_CONV + SILU.  One thread per channel; the new state is written after the thread has read its three old values.
+// Decode / speculative-verify (<= 8 tokens) conv cluster of a GDN layer in one kernel:  GET_ROWS(conv state) + CONCAT(state, qkv^T) + CPY x n
+// (windows of the concat result -> one cache slot each) + SSM_CONV + SILU.  One thread per channel; the new states are written after the
+// thread has read its three old values.
 // ---------------------------------------------------------------------------------------------------------------------------------
+struct conv_cluster_outs { float * dst[4]; int64_t seq_stride[4]; int start[4]; int n; };
+
 static __global__ void __launch_bounds__(128) conv_cluster_f32(
         const float * __restrict__ state_base, const int32_t * __restrict__ ids, const int64_t state_row_stride,
         const char * __restrict__ qkv, const int64_t qkv_nb0, const int64_t qkv_nb1, const int64_t qkv_nb2,
         const float * __restrict__ w, const int64_t w_stride,
         float * __restrict__ out, const int64_t out_nb1, const int64_t out_nb2,
-        float * __restrict__ new_state, const int64_t new_state_seq_stride,
-        const int C, const int T) {
+        const conv_cluster_outs outs, const int C, const int T) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x, seq = blockIdx.y;
     if (c >= C) { return; }
     const float * st = state_base + (int64_t) ids[seq] * state_row_stride + (int64_t) c * 3;
@@ -231,22 +233,31 @@ static __global__ void __launch_bounds__(128) conv_cluster_f32(
         for (int j = 0; j < 4; j++) { sumf += x[t + j] * wv[j]; }
         out[seq * out_nb2 + t * out_nb1 + c] = ggml_cuda_op_silu_single(sumf);
     }
-    float * ns = new_state + seq * new_state_seq_stride + (int64_t) c * 3;
-    ns[0] = x[T]; ns[1] = x[T + 1]; ns[2] = x[T + 2];
+    for (int o = 0; o < outs.n; o++) {
+        float * ns = outs.dst[o] + seq * outs.seq_stride[o] + (int64_t) c * 3;
+        ns[0] = x[outs.start[o]]; ns[1] = x[outs.start[o] + 1]; ns[2] = x[outs.start[o] + 2];
+    }
 }
 
-void ggml_cuda_op_conv_cluster(ggml_backend_cuda_context & ctx, const ggml_tensor * gather, const ggml_tensor * concat, const ggml_tensor * cpy,
+void ggml_cuda_op_conv_cluster(ggml_backend_cuda_context & ctx, const ggml_tensor * gather, const ggml_tensor * concat, const ggml_tensor * const * cpys, int n_cpy,
                                const ggml_tensor * conv, const ggml_tensor * silu) {
     const ggml_tensor * qkv = concat->src[1];            // transposed view: element (t, c) at t * nb0 + c * nb1
     const ggml_tensor * wt  = conv->src[1];
     const int C = (int) conv->src[0]->ne[1], T = (int) (conv->src[0]->ne[0] - 3), nseq = (int) conv->src[0]->ne[2];
-    GGML_ASSERT(T >= 1 && T <= 8 && conv->src[0]->ne[0] == T + 3 && wt->ne[0] == 4 && qkv->type == GGML_TYPE_F32 && silu->type == GGML_TYPE_F32);
+    GGML_ASSERT(T >= 1 && T <= 8 && conv->src[0]->ne[0] == T + 3 && wt->ne[0] == 4 && qkv->type == GGML_TYPE_F32 && silu->type == GGML_TYPE_F32 && n_cpy >= 1 && n_cpy <= 4);
     const int64_t out_nb1 = silu->nb[1] / sizeof(float), out_nb2 = silu->nb[2] / sizeof(float);
+    conv_cluster_outs outs{};
+    outs.n = n_cpy;
+    for (int o = 0; o < n_cpy; o++) {
+        outs.dst[o] = (float *) cpys[o]->src[1]->data;
+        outs.seq_stride[o] = cpys[o]->src[1]->ne[1] > 1 ? (int64_t) (cpys[o]->src[1]->nb[1] / sizeof(float)) : 0;
+        outs.start[o] = (int) (cpys[o]->src[0]->view_offs / sizeof(float));
+        GGML_ASSERT(outs.start[o] >= 0 && outs.start[o] + 3 <= T + 3);
+    }
     conv_cluster_f32<<<dim3((C + 127) / 128, nseq), 128, 0, ctx.stream()>>>(
         (const float *) gather->src[0]->data, (const int32_t *) gather->src[1]->data, (int64_t) (gather->src[0]->nb[1] / sizeof(float)),
-        (const char *) qkv->data, (int64_t) qkv->nb[0], (int64_t) qkv->nb[1], (int64_t) qkv->nb[3 > 2 ? 2 : 2],
+        (const char *) qkv->data, (int64_t) qkv->nb[0], (int64_t) qkv->nb[1], (int64_t) qkv->nb[2],
         (const float *) wt->data, (int64_t) (wt->nb[1] / sizeof(float)),
-        (float *) silu->data, out_nb1, out_nb2,
-        (float *) cpy->src[1]->data, (int64_t) (cpy->src[1]->ne[1] > 1 ? cpy->src[1]->nb[1] / sizeof(float) : 0), C, T);
+        (float *) silu->data, out_nb1, out_nb2, outs, C, T);
     CUDA_CHECK(cudaGetLastError());
 }

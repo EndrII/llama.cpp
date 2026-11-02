@@ -3231,7 +3231,7 @@ static int ggml_cuda_int4_residual_add(const ggml_cgraph * cgraph, int mm_idx, c
 }
 
 // ---- decode conv cluster of a GDN layer: GET_ROWS(conv state) -> RESHAPE -> CONCAT(state, qkv^T) -> {CPY(last columns -> cache), SSM_CONV -> SILU}
-struct ggml_cuda_conv_cluster { int concat_idx, cpy_idx, conv_idx, silu_idx; };
+struct ggml_cuda_conv_cluster { int concat_idx, conv_idx, silu_idx, n_cpy, cpy_idx[4]; };
 
 static bool ggml_cuda_match_conv_cluster(const ggml_cgraph * cg, int ci, ggml_cuda_conv_cluster * m) {
     const ggml_tensor * concat = cg->nodes[ci];
@@ -3242,28 +3242,30 @@ static bool ggml_cuda_match_conv_cluster(const ggml_cgraph * cg, int ci, ggml_cu
     if (gather->src[0]->type != GGML_TYPE_F32 || gather->src[1]->type != GGML_TYPE_I32 || (gather->src[0]->nb[1] % sizeof(float)) != 0) { return false; }
     const int64_t T = concat->ne[0] - 3;
     if (T < 1 || T > 8 || concat->ne[3] != 1 || concat->src[1]->ne[0] != T) { return false; }
-    int cpy = -1, conv = -1, silu = -1, users = 0;
+    int conv = -1, silu = -1, users = 0, ncpy = 0;
+    int cpyv[4];
     for (int j = ci + 1; j < cg->n_nodes && j < ci + 40; j++) {
         const ggml_tensor * n = cg->nodes[j];
         for (int sidx = 0; sidx < GGML_MAX_SRC; sidx++) { users += n->src[sidx] == concat; }
-        if (n->op == GGML_OP_CPY && n->src[0]->view_src == concat) { cpy = j; }
+        if (n->op == GGML_OP_CPY && n->src[0]->view_src == concat) { if (ncpy < 4) { cpyv[ncpy] = j; } ncpy++; }
         else if (n->op == GGML_OP_SSM_CONV && n->src[0] == concat) { conv = j; }
         else if (n->op == GGML_OP_UNARY && ggml_get_unary_op(n) == GGML_UNARY_OP_SILU && conv >= 0 && n->src[0] == cg->nodes[conv]) { silu = j; break; }
     }
-    if (cpy < 0 || conv < 0 || silu < 0 || users != 2) { return false; }
+    if (ncpy < 1 || ncpy > 4 || conv < 0 || silu < 0 || users != 1 + ncpy) { return false; }
     // nothing but views, the cluster itself and state gathers may execute in between
     for (int j = ci + 1; j < silu; j++) {
         const ggml_tensor * n = cg->nodes[j];
         if (n->op == GGML_OP_VIEW || n->op == GGML_OP_RESHAPE || n->op == GGML_OP_PERMUTE || n->op == GGML_OP_TRANSPOSE || n->op == GGML_OP_NONE ||
-            j == cpy || j == conv || n->op == GGML_OP_GET_ROWS ||
+            j == conv || n->op == GGML_OP_GET_ROWS || (n->op == GGML_OP_CPY && n->src[0]->view_src == concat) ||
             (n->op == GGML_OP_SCALE && n->data == n->src[0]->data) ||
             (n->op == GGML_OP_CPY && n->src[1]->view_src != nullptr && n->src[0]->view_src != concat)) { continue; }      // writes into a cache view: allocates nothing      // in-place scale of a cache row: allocates nothing
             return false;
     }
-    const ggml_tensor * c = cg->nodes[conv], * s = cg->nodes[silu], * cp = cg->nodes[cpy];
-    if (c->src[1]->type != GGML_TYPE_F32 || c->src[1]->ne[0] != 4 || s->type != GGML_TYPE_F32 || !ggml_is_contiguous(s) || cp->src[1]->type != GGML_TYPE_F32 ||
+    const ggml_tensor * c = cg->nodes[conv], * s = cg->nodes[silu];
+    for (int q = 0; q < ncpy; q++) { const ggml_tensor * cp = cg->nodes[cpyv[q]]; if (cp->src[1]->type != GGML_TYPE_F32 || cp->src[0]->ne[0] != 3) { return false; } }
+    if (c->src[1]->type != GGML_TYPE_F32 || c->src[1]->ne[0] != 4 || s->type != GGML_TYPE_F32 || !ggml_is_contiguous(s) ||
         c->src[0]->ne[2] != 1 || s->ne[0] != c->src[0]->ne[1]) { return false; }
-    m->concat_idx = ci; m->cpy_idx = cpy; m->conv_idx = conv; m->silu_idx = silu;
+    m->concat_idx = ci; m->conv_idx = conv; m->silu_idx = silu; m->n_cpy = ncpy; for (int q = 0; q < ncpy; q++) { m->cpy_idx[q] = cpyv[q]; }
     return true;
 }
 
@@ -3343,9 +3345,12 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
             { std::lock_guard<std::mutex> lk(g_done_mu); elided = g_conv_gathers.count(node->src[0]->src[0]) > 0; }
             ggml_cuda_conv_cluster m;
             if (elided && ggml_cuda_match_conv_cluster(cgraph, i, &m)) {
-                ggml_cuda_op_conv_cluster(*cuda_ctx, node->src[0]->src[0], node, cgraph->nodes[m.cpy_idx], cgraph->nodes[m.conv_idx], cgraph->nodes[m.silu_idx]);
+                const ggml_tensor * cpys[4];
+                for (int q = 0; q < m.n_cpy; q++) { cpys[q] = cgraph->nodes[m.cpy_idx[q]]; }
+                ggml_cuda_op_conv_cluster(*cuda_ctx, node->src[0]->src[0], node, cpys, m.n_cpy, cgraph->nodes[m.conv_idx], cgraph->nodes[m.silu_idx]);
                 std::lock_guard<std::mutex> lk(g_done_mu);
-                g_done_nodes.insert(cgraph->nodes[m.cpy_idx]); g_done_nodes.insert(cgraph->nodes[m.conv_idx]); g_done_nodes.insert(cgraph->nodes[m.silu_idx]);
+                for (int q = 0; q < m.n_cpy; q++) { g_done_nodes.insert(cgraph->nodes[m.cpy_idx[q]]); }
+                g_done_nodes.insert(cgraph->nodes[m.conv_idx]); g_done_nodes.insert(cgraph->nodes[m.silu_idx]);
                 return INT_MIN;
             }
             GGML_ASSERT(!elided);        // the gather was elided on the promise that this cluster runs

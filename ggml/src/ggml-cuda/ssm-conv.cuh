@@ -2,5 +2,5 @@
 
 void ggml_cuda_op_ssm_conv(ggml_backend_cuda_context & ctx, ggml_tensor * dst, ggml_tensor * bias_add_node = nullptr, ggml_tensor * silu_dst = nullptr);
 
-void ggml_cuda_op_conv_cluster(ggml_backend_cuda_context & ctx, const ggml_tensor * gather, const ggml_tensor * concat, const ggml_tensor * cpy,
+void ggml_cuda_op_conv_cluster(ggml_backend_cuda_context & ctx, const ggml_tensor * gather, const ggml_tensor * concat, const ggml_tensor * const * cpys, int n_cpy,
                                const ggml_tensor * conv, const ggml_tensor * silu);
