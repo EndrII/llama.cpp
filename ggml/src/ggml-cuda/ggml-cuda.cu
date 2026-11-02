@@ -31,6 +31,7 @@
 #include "ggml-cuda/mmf.cuh"
 #include "ggml-cuda/mmq.cuh"
 #include "ggml-cuda/int4-wmma.cuh"
+#include "ggml-cuda/mm-skinny-rdna3.cuh"
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
 #include "ggml-cuda/norm.cuh"
@@ -1824,6 +1825,9 @@ static void ggml_cuda_mul_mat_core(ggml_backend_cuda_context & ctx, const ggml_t
 // Rotated INT4 weights (GGML_INT4, experimental): run the INT4 WMMA kernel for prefill-sized batches, otherwise rotate the
 // activations and fall through to the regular quantized path.
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    if (ggml_cuda_mul_mat_skinny_rdna3(ctx, src0, src1, dst)) {
+        return;
+    }
     if (ggml_cuda_int4_rotated(src0)) {
         if (ggml_cuda_int4_converted(src0)) {      // single-copy weights: only the INT4 kernels can read them
             if (src1->ne[1] * src1->ne[2] * src1->ne[3] <= MMVQ_MAX_BATCH_SIZE) {
