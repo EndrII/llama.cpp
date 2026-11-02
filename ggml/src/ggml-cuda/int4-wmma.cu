@@ -106,14 +106,20 @@ __global__ void k_repack(const block_q4_0 * __restrict__ W, int K, int nsb, cons
 
 // ---------------------------------------------------------------------------------------------------------------- rotation
 // H16 (x) H16 on a 16x16 view of s.*x via two f16 WMMAs; one wave per (row, 256-block)
-__device__ __forceinline__ float8v rotate_block(const float * __restrict__ xrow, int lane, const half16v & b1, const half16v & a2) {
+// yrow != nullptr: the input is silu(x) * y (a GLU / silu*mul that would otherwise be its own kernel and a round trip through memory)
+__device__ __forceinline__ float8v rotate_block(const float * __restrict__ xrow, int lane, const half16v & b1, const half16v & a2, const float * __restrict__ yrow = nullptr) {
 #ifdef INT4W_DEVICE_OK
     const int h = lane >> 4, lc = lane & 15;
     half16v a1;
     const float4 * xp = (const float4 *) (xrow + lc * 16);
 #pragma unroll
     for (int q = 0; q < 4; q++) {
-        const float4 v = xp[q];
+        float4 v = xp[q];
+        if (yrow) {
+            const float4 y = ((const float4 *) (yrow + lc * 16))[q];
+            v.x = ggml_cuda_op_silu_single(v.x) * y.x; v.y = ggml_cuda_op_silu_single(v.y) * y.y;
+            v.z = ggml_cuda_op_silu_single(v.z) * y.z; v.w = ggml_cuda_op_silu_single(v.w) * y.w;
+        }
         a1[4 * q + 0] = (_Float16) (v.x * sign256(lc * 16 + 4 * q + 0)); a1[4 * q + 1] = (_Float16) (v.y * sign256(lc * 16 + 4 * q + 1));
         a1[4 * q + 2] = (_Float16) (v.z * sign256(lc * 16 + 4 * q + 2)); a1[4 * q + 3] = (_Float16) (v.w * sign256(lc * 16 + 4 * q + 3));
     }
@@ -150,7 +156,7 @@ __global__ __launch_bounds__(32) void k_rot_f32(const float * __restrict__ X, fl
 }
 
 // fused rotate + quantize + pack: one 256-thread block per token (rotated fp16 row stays in LDS)
-__global__ __launch_bounds__(256) void k_rot_pack(const float * __restrict__ X, int K, uint8_t * __restrict__ X4p, uint8_t * __restrict__ XMp, float * __restrict__ XRp, float clip) {
+__global__ __launch_bounds__(256) void k_rot_pack(const float * __restrict__ X, int K, uint8_t * __restrict__ X4p, uint8_t * __restrict__ XMp, float * __restrict__ XRp, float clip, const float * __restrict__ Y) {
     extern __shared__ __align__(16) unsigned char fsm[];
     __half * xr = (__half *) fsm;
     float * amx = (float *) (fsm + (size_t) K * 2);
@@ -160,7 +166,7 @@ __global__ __launch_bounds__(256) void k_rot_pack(const float * __restrict__ X, 
 #pragma unroll
     for (int k = 0; k < 16; k++) { b1[k] = h16(k, lc); a2[k] = h16(lc, k < 8 ? 2 * k : 2 * (k - 8) + 1); }
     for (int sb = wave; sb < nsb; sb += 8) {
-        const float8v w = rotate_block(X + (size_t) n * K + sb * 256, lane, b1, a2);
+        const float8v w = rotate_block(X + (size_t) n * K + sb * 256, lane, b1, a2, Y ? Y + (size_t) n * K + sb * 256 : nullptr);
         float mx = 0.f;
 #pragma unroll
         for (int i = 0; i < 8; i++) {
@@ -325,7 +331,7 @@ __global__ __launch_bounds__(WAVES_N * 32) void k_gemm(const uint8_t * __restric
 }
 
 // 8-bit activations: q = 16*hi + lo with hi in [-8,7] (signed int4 plane) and lo in [0,15] (unsigned int4 plane); two WMMA passes
-__global__ __launch_bounds__(256) void k_rot_pack8(const float * __restrict__ X, int K, uint8_t * __restrict__ Xhp, uint8_t * __restrict__ Xlp, uint8_t * __restrict__ XMp, float * __restrict__ XRp) {
+__global__ __launch_bounds__(256) void k_rot_pack8(const float * __restrict__ X, int K, uint8_t * __restrict__ Xhp, uint8_t * __restrict__ Xlp, uint8_t * __restrict__ XMp, float * __restrict__ XRp, const float * __restrict__ Y) {
     extern __shared__ __align__(16) unsigned char fsm[];
     __half * xr = (__half *) fsm;
     float * amx = (float *) (fsm + (size_t) K * 2);
@@ -335,7 +341,7 @@ __global__ __launch_bounds__(256) void k_rot_pack8(const float * __restrict__ X,
 #pragma unroll
     for (int k = 0; k < 16; k++) { b1[k] = h16(k, lc); a2[k] = h16(lc, k < 8 ? 2 * k : 2 * (k - 8) + 1); }
     for (int sb = wave; sb < nsb; sb += 8) {
-        const float8v w = rotate_block(X + (size_t) n * K + sb * 256, lane, b1, a2);
+        const float8v w = rotate_block(X + (size_t) n * K + sb * 256, lane, b1, a2, Y ? Y + (size_t) n * K + sb * 256 : nullptr);
         float mx = 0.f;
 #pragma unroll
         for (int i = 0; i < 8; i++) {
@@ -898,7 +904,7 @@ void ggml_cuda_int4_rot_q8_1(const ggml_tensor * src1, void * q8_1, cudaStream_t
     CUDA_CHECK(cudaGetLastError());
 }
 
-bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const float * glu_x, const float * glu_y) {
     if (int4_mode() < 2) return false;
     const int cc = ggml_cuda_info().devices[ctx.device].cc;
     if (!GGML_CUDA_CC_IS_RDNA3_0(cc)) return false;
@@ -939,14 +945,14 @@ bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor *
     const size_t smem = (size_t) K * 2 + (size_t) nsb * 4;
     const dim3 grid(M / TILE_M, Npad / TILE_N);
     if (a8) {
-        if (!packed) k_rot_pack8<<<N, 256, smem, stream>>>((const float *) src1->data, K, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr);
+        if (!packed) k_rot_pack8<<<N, 256, smem, stream>>>(glu_x ? glu_x : (const float *) src1->data, K, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, glu_y);
         switch (w.gw) {
             case 2:  k_gemm8w<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
             case 4:  k_gemm8w<4><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
             default: k_gemm8<<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
         }
     } else {
-        if (!packed) k_rot_pack<<<N, 256, smem, stream>>>((const float *) src1->data, K, x4_ptr, xm_ptr, xr_ptr, int4_clip());
+        if (!packed) k_rot_pack<<<N, 256, smem, stream>>>(glu_x ? glu_x : (const float *) src1->data, K, x4_ptr, xm_ptr, xr_ptr, int4_clip(), glu_y);
         switch (w.gw) {
             case 1:  k_gemm<1><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
             case 2:  k_gemm<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
@@ -1026,7 +1032,7 @@ bool ggml_cuda_int4_rotated(const ggml_tensor *) { return false; }
 void ggml_cuda_int4_rotate(ggml_backend_cuda_context &, const ggml_tensor *, float *) {}
 bool ggml_cuda_int4_fused_ok(const ggml_tensor *) { return false; }
 void ggml_cuda_int4_rot_q8_1(const ggml_tensor *, void *, cudaStream_t) {}
-bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *) { return false; }
+bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const float *, const float *) { return false; }
 bool ggml_cuda_int4_converted(const ggml_tensor *) { return false; }
 void ggml_cuda_int4_prepare(ggml_backend_cuda_context &, const ggml_cgraph *) {}
 void ggml_cuda_int4_matvec(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const ggml_cuda_mm_fusion_args_host *) {}

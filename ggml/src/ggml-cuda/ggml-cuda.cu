@@ -3887,6 +3887,34 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         return fused_node_count - 1;
     }
 
+    // silu(a) * b (SWIGLU, or SILU + MUL) feeding a rotated INT4 GEMM: apply it while the GEMM packs its activations
+    if (node->op == GGML_OP_GLU || node->op == GGML_OP_UNARY) {
+        const ggml_tensor * mm = nullptr;
+        const float * xa = nullptr, * xb = nullptr;
+        int extra = 0;
+        if (node->op == GGML_OP_GLU) {
+            if (ggml_get_glu_op(node) == GGML_GLU_OP_SWIGLU && node->src[1] && ggml_get_op_params_i32(node, 1) == 0 && i + 1 < cgraph->n_nodes &&
+                node->src[0]->type == GGML_TYPE_F32 && node->src[1]->type == GGML_TYPE_F32 && ggml_is_contiguous(node->src[0]) &&
+                ggml_is_contiguous(node->src[1]) && ggml_are_same_shape(node->src[0], node->src[1]) && ggml_node_has_n_uses(cgraph, i, 1)) {
+                mm = cgraph->nodes[i + 1]; xa = (const float *) node->src[0]->data; xb = (const float *) node->src[1]->data; extra = 1;
+                if (mm->src[1] != node) { mm = nullptr; }
+            }
+        } else if (ggml_cuda_can_fuse(cgraph, i, { GGML_OP_UNARY, GGML_OP_MUL }, { GGML_UNARY_OP_SILU }) && i + 2 < cgraph->n_nodes) {
+            const ggml_tensor * mul   = cgraph->nodes[i + 1];
+            const ggml_tensor * other = mul->src[0] == node ? mul->src[1] : mul->src[0];
+            if (node->src[0]->type == GGML_TYPE_F32 && other->type == GGML_TYPE_F32 && ggml_is_contiguous(node->src[0]) && ggml_is_contiguous(other) &&
+                ggml_are_same_shape(node->src[0], other) && ggml_node_has_n_uses(cgraph, i + 1, 1)) {
+                mm = cgraph->nodes[i + 2]; xa = (const float *) node->src[0]->data; xb = (const float *) other->data; extra = 2;
+                if (mm->src[1] != mul) { mm = nullptr; }
+            }
+        }
+        if (mm && mm->op == GGML_OP_MUL_MAT && ggml_cuda_int4_rotated(mm->src[0]) && ggml_cuda_int4_converted(mm->src[0]) &&
+            mm->src[1]->ne[1] * mm->src[1]->ne[2] * mm->src[1]->ne[3] > MMVQ_MAX_BATCH_SIZE &&
+            ggml_cuda_int4_mul_mat(*cuda_ctx, mm->src[0], mm->src[1], cgraph->nodes[i + extra], xa, xb)) {
+            return extra;
+        }
+    }
+
     if (ggml_cuda_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ADD }, {})) {
         ggml_cuda_op_rms_norm_fused_add(*cuda_ctx, node, cgraph->nodes[i + 1], cgraph->nodes[i + 2]);
         return 2;
