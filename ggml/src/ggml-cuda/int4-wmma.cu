@@ -780,12 +780,12 @@ __global__ __launch_bounds__(1024) void k_rmsnorm_rot_q8x(const float * __restri
 constexpr int MV_NW = 10;
 __device__ __forceinline__ int sdot4(int a, int b, int c) { return ggml_cuda_dp4a(a, b, c); }
 
-template <int NC, bool GATE, bool ROT = false>
+template <int NC, bool GATE, bool ROT = false, bool CV = false>
 __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ S, float inv,
         const uint8_t * __restrict__ Wp2, const uint8_t * __restrict__ Wh2, const float * __restrict__ S2, float inv2,
         const int8_t * __restrict__ Xq, const float2 * __restrict__ Xd, float * __restrict__ dst, const float * __restrict__ xb, const float * __restrict__ gb,
         int glu, int M, int K, int stride_dst, const float * __restrict__ Xf = nullptr, const float * __restrict__ Yf = nullptr,
-        int rmode = 1, int ystride = 256, const float * __restrict__ Nw = nullptr, float neps = 0.f) {
+        int rmode = 1, int ystride = 256, const float * __restrict__ Nw = nullptr, float neps = 0.f, const ggml_cuda_conv_fold cv = ggml_cuda_conv_fold{}) {
     const int lane = threadIdx.x, r = lane & 15, h = lane >> 4, wv = threadIdx.y, ft = blockIdx.x, nsb = K / 256;
     // ROT: the activation is rotated + quantized here, per wave and per 256-block, instead of by a separate kernel (NC == 1)
     __shared__ __align__(16) int8_t rq[ROT ? MV_NW : 1][256];
@@ -890,7 +890,20 @@ __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__ 
                     default:                 res *= gv; break;
                 }
             }
-            dst[(size_t) j * stride_dst + row] = res;
+            if (CV) {          // the conv cluster of this channel: x = {state[0..2], res}
+                const float * st = cv.state_base + (int64_t) cv.ids[0] * cv.state_row_stride + (int64_t) row * 3;
+                const float x[4] = { st[0], st[1], st[2], res };
+                float sumf = 0.0f;
+#pragma unroll
+                for (int q = 0; q < 4; q++) { sumf += x[q] * cv.w[(int64_t) row * cv.w_stride + q]; }
+                cv.out[row] = ggml_cuda_op_silu_single(sumf);
+                for (int o = 0; o < cv.n; o++) {
+                    float * ns = cv.dst[o] + (int64_t) row * 3;
+                    ns[0] = x[cv.start[o]]; ns[1] = x[cv.start[o] + 1]; ns[2] = x[cv.start[o] + 2];
+                }
+            } else {
+                dst[(size_t) j * stride_dst + row] = res;
+            }
         }
     }
 }
@@ -1157,7 +1170,8 @@ bool ggml_cuda_int4_rmsnorm_rot(ggml_backend_cuda_context & ctx, const ggml_tens
     return true;
 }
 
-void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion, const float * glu_x, const float * glu_y, int mode, int ystride, const float * nw, float eps) {
+void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion, const float * glu_x, const float * glu_y, int mode, int ystride, const float * nw, float eps,
+                           const ggml_cuda_conv_fold * cf) {
     const int K = (int) src0->ne[0], M = (int) src0->ne[1], N = (int) (src1->ne[1] * src1->ne[2] * src1->ne[3]);
     GGML_ASSERT(N >= 1 && N <= 8 && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && src1->ne[0] == K);
     GGML_ASSERT(dst->type == GGML_TYPE_F32 && dst->ne[0] == M && ggml_is_contiguous(dst));
@@ -1212,6 +1226,13 @@ void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * 
         CUDA_CHECK(cudaGetLastError());
         return;
     }
+    if (cf) {
+        GGML_ASSERT(N == 1 && !gate && !rot && !xb);
+        k_mv<1, false, false, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, nullptr, nullptr, nullptr, 0.f, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst,
+                                                              nullptr, nullptr, 1, 256, nullptr, 0.f, *cf);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
     switch (N) { MV_CASE(1) MV_CASE(2) MV_CASE(3) MV_CASE(4) MV_CASE(5) MV_CASE(6) MV_CASE(7) MV_CASE(8) }
 #undef MV_CASE
     CUDA_CHECK(cudaGetLastError());
@@ -1227,7 +1248,7 @@ void ggml_cuda_int4_rot_q8_1(const ggml_tensor *, void *, cudaStream_t) {}
 bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const float *, const float *, const float *) { return false; }
 bool ggml_cuda_int4_converted(const ggml_tensor *) { return false; }
 void ggml_cuda_int4_prepare(ggml_backend_cuda_context &, const ggml_cgraph *) {}
-void ggml_cuda_int4_matvec(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const ggml_cuda_mm_fusion_args_host *, const float *, const float *, int, int, const float *, float) {}
+void ggml_cuda_int4_matvec(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const ggml_cuda_mm_fusion_args_host *, const float *, const float *, int, int, const float *, float, const ggml_cuda_conv_fold *) {}
 void ggml_cuda_int4_forget(const void *, size_t) {}
 
 #endif

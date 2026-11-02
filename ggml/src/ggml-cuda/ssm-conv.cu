@@ -261,3 +261,19 @@ void ggml_cuda_op_conv_cluster(ggml_backend_cuda_context & ctx, const ggml_tenso
         (float *) silu->data, out_nb1, out_nb2, outs, C, T);
     CUDA_CHECK(cudaGetLastError());
 }
+
+bool ggml_cuda_conv_fold_args(const ggml_tensor * gather, const ggml_tensor * concat, const ggml_tensor * const * cpys, int n_cpy,
+                              const ggml_tensor * conv, const ggml_tensor * silu, ggml_cuda_conv_fold * f) {
+    const ggml_tensor * wt = conv->src[1];
+    const int T = (int) (conv->src[0]->ne[0] - 3), nseq = (int) conv->src[0]->ne[2];
+    if (T != 1 || nseq != 1 || n_cpy < 1 || n_cpy > 4 || wt->ne[0] != 4 || concat->src[1]->type != GGML_TYPE_F32 || silu->type != GGML_TYPE_F32) { return false; }
+    f->state_base = (const float *) gather->src[0]->data; f->ids = (const int32_t *) gather->src[1]->data;
+    f->state_row_stride = (int64_t) (gather->src[0]->nb[1] / sizeof(float));
+    f->w = (const float *) wt->data; f->w_stride = (int64_t) (wt->nb[1] / sizeof(float)); f->out = (float *) silu->data; f->n = n_cpy;
+    for (int o = 0; o < n_cpy; o++) {
+        f->dst[o] = (float *) cpys[o]->src[1]->data;
+        f->start[o] = (int) (cpys[o]->src[0]->view_offs / sizeof(float));
+        if (f->start[o] < 0 || f->start[o] + 3 > T + 3) { return false; }
+    }
+    return true;
+}

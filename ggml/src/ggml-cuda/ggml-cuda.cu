@@ -3405,6 +3405,37 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         }
     }
 
+    // GDN qkv projection followed by its conv cluster (one token): the cluster runs in the matvec's epilogue
+    if (conv_cluster_ok && node->op == GGML_OP_MUL_MAT && node->type == GGML_TYPE_F32 && ggml_cuda_int4_rotated(node->src[0]) && ggml_cuda_int4_converted(node->src[0]) &&
+        node->src[1]->ne[1] * node->src[1]->ne[2] * node->src[1]->ne[3] == 1 && GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[cuda_ctx->device].cc)) {
+        static const bool fold_ok = !getenv("GGML_CONV_FOLD") || atoi(getenv("GGML_CONV_FOLD")) != 0;
+        for (int j = i + 1; fold_ok && j < cgraph->n_nodes && j < i + 8; j++) {
+            const ggml_tensor * n = cgraph->nodes[j];
+            if (n->op == GGML_OP_VIEW || n->op == GGML_OP_RESHAPE || n->op == GGML_OP_PERMUTE || n->op == GGML_OP_TRANSPOSE) { continue; }
+            if (n->op == GGML_OP_CONCAT && n->src[0] && n->src[0]->op == GGML_OP_RESHAPE && n->src[0]->src[0]->op == GGML_OP_GET_ROWS) {
+                bool elided; { std::lock_guard<std::mutex> lk(g_done_mu); elided = g_conv_gathers.count(n->src[0]->src[0]) > 0; }
+                const ggml_tensor * b = n->src[1];
+                while (b && (b->op == GGML_OP_VIEW || b->op == GGML_OP_RESHAPE || b->op == GGML_OP_PERMUTE || b->op == GGML_OP_TRANSPOSE)) { b = b->src[0]; }
+                int users = 0;
+                for (int q = i + 1; q < cgraph->n_nodes; q++) { for (int sidx = 0; sidx < GGML_MAX_SRC; sidx++) { users += cgraph->nodes[q]->src[sidx] == node; } }
+                ggml_cuda_conv_cluster m;
+                if (elided && b == node && users == 1 && ggml_cuda_match_conv_cluster(cgraph, j, &m)) {
+                    const ggml_tensor * cpys[4];
+                    for (int q = 0; q < m.n_cpy; q++) { cpys[q] = cgraph->nodes[m.cpy_idx[q]]; }
+                    ggml_cuda_conv_fold cf;
+                    if (ggml_cuda_conv_fold_args(n->src[0]->src[0], n, cpys, m.n_cpy, cgraph->nodes[m.conv_idx], cgraph->nodes[m.silu_idx], &cf) && cgraph->nodes[m.silu_idx]->ne[0] == node->ne[0]) {
+                        ggml_cuda_int4_matvec(*cuda_ctx, node->src[0], node->src[1], node, nullptr, nullptr, nullptr, 1, 256, nullptr, 0.f, &cf);
+                        std::lock_guard<std::mutex> lk(g_done_mu);
+                        for (int q = 0; q < m.n_cpy; q++) { g_done_nodes.insert(cgraph->nodes[m.cpy_idx[q]]); }
+                        g_done_nodes.insert(cgraph->nodes[m.conv_idx]); g_done_nodes.insert(cgraph->nodes[m.silu_idx]); g_done_nodes.insert(n);
+                        return INT_MIN;
+                    }
+                }
+            }
+            break;
+        }
+    }
+
     // decode attention prep: q (RMS_NORM, MUL, ROPE) is deferred to the k chain (RMS_NORM, MUL, ROPE, VIEW, SET_ROWS) and the V SET_ROWS; one launch for all of it
     static const bool attn_prep_ok = !getenv("GGML_ATTN_PREP") || atoi(getenv("GGML_ATTN_PREP")) != 0;
     if (attn_prep_ok && node->op == GGML_OP_RMS_NORM && GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[cuda_ctx->device].cc)) {

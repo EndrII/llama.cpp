@@ -1,6 +1,7 @@
 #pragma once
 // INT4 activations x symmetric-INT4 weights on RDNA3 WMMA (opt-in, experimental).  See int4-wmma.cu.
 #include "common.cuh"
+#include "ssm-conv.cuh"
 
 // true if src0 is one of the rotated Q4_0 weight tensors (GGML_INT4 >= 1): its activations must be rotated before ANY matmul with it
 bool ggml_cuda_int4_rotated(const ggml_tensor * src0);
@@ -33,6 +34,7 @@ void ggml_cuda_int4_prepare(ggml_backend_cuda_context & ctx, const ggml_cgraph *
 // glu_x / glu_y: the matvec's input is built from these instead of src1 (rotation prologue, one token), by `mode`:
 //   1: silu(glu_x) * glu_y     2: glu_x * sigmoid(glu_y), glu_y read with ystride floats between 256-blocks     3: silu(glu_x) * (RMS norm over 128 of glu_y * nw)
 void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion,
-                            const float * glu_x = nullptr, const float * glu_y = nullptr, int mode = 1, int ystride = 256, const float * nw = nullptr, float eps = 0.f);
+                            const float * glu_x = nullptr, const float * glu_y = nullptr, int mode = 1, int ystride = 256, const float * nw = nullptr, float eps = 0.f,
+                            const ggml_cuda_conv_fold * cf = nullptr);
 // the device buffer [ptr, ptr+size) is going away: forget converted tensors inside it
 void ggml_cuda_int4_forget(const void * ptr, size_t size);
