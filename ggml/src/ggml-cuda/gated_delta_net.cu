@@ -172,6 +172,25 @@ gated_delta_net_cuda(const float * q,
 }
 
 #if defined(GGML_USE_HIP)
+// wave32 reductions on DPP / permlanex16 instead of ds_bpermute (__shfl_xor): the decode kernel is a chain of dependent reductions, their latency is its runtime
+#if defined(__HIP_DEVICE_COMPILE__) && defined(__GFX11__)
+template <int CTRL> __device__ __forceinline__ float gdn_dpp(float x) { return __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(x), CTRL, 0xF, 0xF, false)); }
+__device__ __forceinline__ float gdn_swap_rows(float x) { return __int_as_float(__builtin_amdgcn_permlanex16(0, __float_as_int(x), 0x76543210u, 0xFEDCBA98u, false, false)); }
+__device__ __forceinline__ float gdn_wave_sum(float x) {
+    x += gdn_dpp<0xB1>(x); x += gdn_dpp<0x4E>(x); x += gdn_dpp<0x141>(x); x += gdn_dpp<0x140>(x);
+    return x + gdn_swap_rows(x);
+}
+#else
+__device__ __forceinline__ float gdn_swap_rows(float x) { return __shfl_xor(x, 16, 32); }
+__device__ __forceinline__ float gdn_wave_sum(float x) {
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) { x += __shfl_xor(x, o, 32); }
+    return x;
+}
+#endif
+#endif
+
+#if defined(GGML_USE_HIP)
 // decode (one token): the GDN alpha / beta projections (bf16 [K] rows, one per head) and their gate math are computed by the kernel itself from the normalized
 // f32 activation instead of by a skinny matmul launch of their own:  g = softplus(alpha.x + bias) * scl,  beta = sigmoid(beta.x)
 struct gdn_ab_args { const uint16_t * aw; const uint16_t * bw; const float * x; const float * bias; const float * scl; int K; };
@@ -218,8 +237,7 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
     auto l2n = [&](float4 v) {
         if (l2eps < 0.f) { return v; }
         float ss = v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
-#pragma unroll
-        for (int o = 16; o > 0; o >>= 1) { ss += __shfl_xor(ss, o, 32); }
+        ss = gdn_wave_sum(ss);
         const float sc = rsqrtf(fmaxf(ss, l2eps * l2eps));
         return make_float4(sc * v.x, sc * v.y, sc * v.z, sc * v.w);
     };
@@ -248,8 +266,7 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
                     sbt = fmaf(__uint_as_float(bu[j] << 16), xs[2 * j], sbt); sbt = fmaf(__uint_as_float(bu[j] & 0xFFFF0000u), xs[2 * j + 1], sbt);
                 }
             }
-#pragma unroll
-            for (int o = 16; o > 0; o >>= 1) { sa += __shfl_xor(sa, o, 32); sbt += __shfl_xor(sbt, o, 32); }
+            sa = gdn_wave_sum(sa); sbt = gdn_wave_sum(sbt);
             __shared__ float abr[4][2];
             if (lane == 0) { abr[threadIdx.y][0] = sa; abr[threadIdx.y][1] = sbt; }
             __syncthreads();
@@ -282,7 +299,7 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
             kv2 = fmaf(s[i + 2], kk.z, kv2); kv3 = fmaf(s[i + 3], kk.w, kv3);
         }
         float kv = (kv0 + kv1) + (kv2 + kv3);
-        kv += __shfl_xor(kv, 16, 32);
+        kv += gdn_swap_rows(kv);
         const float delta = (v_val - g_val * kv) * beta_val;
 
         float a0 = 0.f, a1 = 0.f, a2 = 0.f, a3 = 0.f;
@@ -295,7 +312,7 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
             s[i + 3] = fmaf(g_val, s[i + 3], kk.w * delta); a3 = fmaf(s[i + 3], qq.w, a3);
         }
         float att = (a0 + a1) + (a2 + a3);
-        att += __shfl_xor(att, 16, 32);
+        att += gdn_swap_rows(att);
         if (half == 0) { attn_data[col] = att * scale; }
         attn_data += S_v * H;
 

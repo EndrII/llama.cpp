@@ -238,7 +238,7 @@ __global__ __launch_bounds__(256) void k_rot_pack(const float * __restrict__ X, 
             xr[sb * 256 + 16 * (2 * i + h) + lc] = hv;
             mx = fmaxf(mx, fabsf(__half2float(hv)));
         }
-        for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor(mx, o, 32));
+        mx = wave32_max(mx);
         if (lane == 0) amx[sb] = mx;
     }
     __syncthreads();
@@ -413,7 +413,7 @@ __global__ __launch_bounds__(256) void k_rot_pack8(const float * __restrict__ X,
             xr[sb * 256 + 16 * (2 * i + h) + lc] = hv;
             mx = fmaxf(mx, fabsf(__half2float(hv)));
         }
-        for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor(mx, o, 32));
+        mx = wave32_max(mx);
         if (lane == 0) amx[sb] = mx;
     }
     __syncthreads();
@@ -701,8 +701,7 @@ __global__ __launch_bounds__(32) void k_rot_q8_1(const float * __restrict__ X, b
     for (int i = 0; i < 8; i++) {
         const float x = w[i] * 0.0625f;
         float amax = fabsf(x), sum = x;
-#pragma unroll
-        for (int o = 16; o > 0; o >>= 1) { amax = fmaxf(amax, __shfl_xor(amax, o, 32)); sum += __shfl_xor(sum, o, 32); }
+        amax = wave32_max(amax); sum = wave32_sum(sum);
         const float d = amax / 127.0f;
         block_q8_1 & y = Y[(size_t) n * (K / 32) + sb * 8 + i];
         y.qs[16 * h + lc] = amax == 0.0f ? 0 : (int8_t) roundf(x / d);
@@ -877,7 +876,7 @@ __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__ 
         }
     }
 #pragma unroll
-    for (int j = 0; j < NC; j++) { acc[j] += __shfl_xor(acc[j], 16, 32); accg[j] += __shfl_xor(accg[j], 16, 32); }
+    for (int j = 0; j < NC; j++) { acc[j] += swap_rows(acc[j]); accg[j] += swap_rows(accg[j]); }
     __shared__ float red[MV_NW][NC][2][16];
     if (h == 0) {
 #pragma unroll
