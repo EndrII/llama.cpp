@@ -3202,6 +3202,26 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
 }
 
 // try and fuse nodes and return the number of nodes to skip
+// rotated INT4 MUL_MAT -> [RESHAPE] -> ADD(residual): the add is folded into the GEMM epilogue.  Returns the number of nodes after the
+// MUL_MAT that get absorbed (1 or 2), or 0.
+static int ggml_cuda_int4_residual_add(const ggml_cgraph * cgraph, int mm_idx, const float ** res, ggml_tensor ** add_node) {
+    if (mm_idx + 1 >= cgraph->n_nodes) { return 0; }
+    const ggml_tensor * mm = cgraph->nodes[mm_idx];
+    if (!ggml_node_has_n_uses(cgraph, mm_idx, 1)) { return 0; }
+    int extra = 1;
+    const ggml_tensor * cand = mm;
+    ggml_tensor * add = cgraph->nodes[mm_idx + 1];
+    if (add->op == GGML_OP_RESHAPE && add->src[0] == mm && mm_idx + 2 < cgraph->n_nodes) {
+        cand = add; add = cgraph->nodes[mm_idx + 2]; extra = 2;
+    }
+    if (add->op != GGML_OP_ADD || (add->src[0] != cand && add->src[1] != cand)) { return 0; }
+    const ggml_tensor * other = add->src[0] == cand ? add->src[1] : add->src[0];
+    if (other == cand || other->type != GGML_TYPE_F32 || add->type != GGML_TYPE_F32 || !ggml_is_contiguous(other) || !ggml_is_contiguous(add) ||
+        ggml_nelements(other) != ggml_nelements(mm) || !ggml_are_same_shape(other, add) || ggml_nelements(add) != ggml_nelements(mm)) { return 0; }
+    *res = (const float *) other->data; *add_node = add;
+    return extra;
+}
+
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
     static bool disable_fusion = getenv("GGML_CUDA_DISABLE_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_FUSION"));
@@ -3913,8 +3933,22 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         }
         if (mm && mm->op == GGML_OP_MUL_MAT && ggml_cuda_int4_rotated(mm->src[0]) && ggml_cuda_int4_converted(mm->src[0]) &&
             mm->src[1]->ne[1] * mm->src[1]->ne[2] * mm->src[1]->ne[3] > MMVQ_MAX_BATCH_SIZE &&
-            ggml_cuda_int4_mul_mat(*cuda_ctx, mm->src[0], mm->src[1], cgraph->nodes[i + extra], xa, xb)) {
-            return extra;
+            true) {
+            const float * res = nullptr; ggml_tensor * add = nullptr;
+            const int r = ggml_cuda_int4_residual_add(cgraph, i + extra, &res, &add);
+            if (ggml_cuda_int4_mul_mat(*cuda_ctx, mm->src[0], mm->src[1], r ? add : cgraph->nodes[i + extra], xa, xb, r ? res : nullptr)) {
+                return extra + r;
+            }
+        }
+    }
+
+    // rotated INT4 GEMM followed by a residual add
+    if (node->op == GGML_OP_MUL_MAT && ggml_cuda_int4_rotated(node->src[0]) && ggml_cuda_int4_converted(node->src[0]) &&
+        node->src[1]->type == GGML_TYPE_F32 && node->src[1]->ne[1] * node->src[1]->ne[2] * node->src[1]->ne[3] > MMVQ_MAX_BATCH_SIZE) {
+        const float * res = nullptr; ggml_tensor * add = nullptr;
+        const int r = ggml_cuda_int4_residual_add(cgraph, i, &res, &add);
+        if (r && ggml_cuda_int4_mul_mat(*cuda_ctx, node->src[0], node->src[1], add, nullptr, nullptr, res)) {
+            return r;
         }
     }
 

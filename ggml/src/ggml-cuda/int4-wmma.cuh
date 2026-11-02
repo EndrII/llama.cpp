@@ -9,9 +9,10 @@ bool ggml_cuda_int4_rotated(const ggml_tensor * src0);
 void ggml_cuda_int4_rotate(ggml_backend_cuda_context & ctx, const ggml_tensor * src1, float * dst);
 
 // INT4 WMMA prefill matmul (GGML_INT4 >= 2).  Returns false when not applicable (caller falls back to rotate + regular path).
+// res: added to the output (a residual ADD folded into the GEMM epilogue; dst is then the ADD node)
 // glu_x / glu_y: pack silu(glu_x) * glu_y instead of src1 (whose producer was skipped; src1 only supplies the shape)
 bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst,
-                            const float * glu_x = nullptr, const float * glu_y = nullptr);
+                            const float * glu_x = nullptr, const float * glu_y = nullptr, const float * res = nullptr);
 
 // decode-sized batches: rotate + quantize to Q8_1 in one kernel (used inside mul_mat_vec_q for rotated weights).
 // ggml_cuda_int4_fused_ok tells whether src1 qualifies; the caller must then use ggml_cuda_mul_mat_vec_q directly.

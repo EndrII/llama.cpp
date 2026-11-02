@@ -206,7 +206,7 @@ __global__ __launch_bounds__(256) void k_rot_pack(const float * __restrict__ X, 
 // ---------------------------------------------------------------------------------------------------------------- GEMM
 template <int GW>
 __global__ __launch_bounds__(WAVES_N * 32) void k_gemm(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ WS,
-        const uint8_t * __restrict__ X4p, const uint8_t * __restrict__ XMp, const float * __restrict__ XRp, float * __restrict__ out, int M, int N, int K) {
+        const uint8_t * __restrict__ X4p, const uint8_t * __restrict__ XMp, const float * __restrict__ XRp, float * __restrict__ out, int M, int N, int K, const float * res) {
 #ifdef INT4W_DEVICE_OK
     const int lane = threadIdx.x & 31;
     const int wn = __builtin_amdgcn_readfirstlane(threadIdx.x >> 5);
@@ -323,7 +323,7 @@ __global__ __launch_bounds__(WAVES_N * 32) void k_gemm(const uint8_t * __restric
 #pragma unroll
             for (int i = 0; i < 8; i++) {
                 const int tok = (tt0 + nj) * 16 + 2 * i + h;
-                if (tok < N) out[(size_t) tok * M + feat] = (float) itot[mi][nj][i] * (sf * dr[i]);
+                if (tok < N) { const size_t oi = (size_t) tok * M + feat; out[oi] = (float) itot[mi][nj][i] * (sf * dr[i]) + (res ? res[oi] : 0.f); }
             }
         }
     }
@@ -386,7 +386,7 @@ __global__ __launch_bounds__(256) void k_rot_pack8(const float * __restrict__ X,
 
 // one scale group (32 K-values) per unit: hi-plane WMMAs, x16, lo-plane WMMAs on the same accumulator, then the integer weight scale
 __global__ __launch_bounds__(WAVES_N * 32) void k_gemm8(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ WS,
-        const uint8_t * __restrict__ Xhp, const uint8_t * __restrict__ Xlp, const uint8_t * __restrict__ XMp, const float * __restrict__ XRp, float * __restrict__ out, int M, int N, int K) {
+        const uint8_t * __restrict__ Xhp, const uint8_t * __restrict__ Xlp, const uint8_t * __restrict__ XMp, const float * __restrict__ XRp, float * __restrict__ out, int M, int N, int K, const float * res) {
 #ifdef INT4W_DEVICE_OK
     const int lane = threadIdx.x & 31;
     const int wn = __builtin_amdgcn_readfirstlane(threadIdx.x >> 5);
@@ -499,7 +499,7 @@ __global__ __launch_bounds__(WAVES_N * 32) void k_gemm8(const uint8_t * __restri
 #pragma unroll
             for (int i = 0; i < 8; i++) {
                 const int tok = (tt0 + nj) * 16 + 2 * i + h;
-                if (tok < N) out[(size_t) tok * M + feat] = tot[mi][nj][i] * (sf * dr[i]);
+                if (tok < N) { const size_t oi = (size_t) tok * M + feat; out[oi] = tot[mi][nj][i] * (sf * dr[i]) + (res ? res[oi] : 0.f); }
             }
         }
     }
@@ -510,7 +510,7 @@ __global__ __launch_bounds__(WAVES_N * 32) void k_gemm8(const uint8_t * __restri
 // on one accumulator, so the integer scale is applied once per GW groups
 template <int GW>
 __global__ __launch_bounds__(WAVES_N * 32) void k_gemm8w(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ WS,
-        const uint8_t * __restrict__ Xhp, const uint8_t * __restrict__ Xlp, const uint8_t * __restrict__ XMp, const float * __restrict__ XRp, float * __restrict__ out, int M, int N, int K) {
+        const uint8_t * __restrict__ Xhp, const uint8_t * __restrict__ Xlp, const uint8_t * __restrict__ XMp, const float * __restrict__ XRp, float * __restrict__ out, int M, int N, int K, const float * res) {
 #ifdef INT4W_DEVICE_OK
     const int lane = threadIdx.x & 31;
     const int wn = __builtin_amdgcn_readfirstlane(threadIdx.x >> 5);
@@ -619,7 +619,7 @@ __global__ __launch_bounds__(WAVES_N * 32) void k_gemm8w(const uint8_t * __restr
 #pragma unroll
             for (int i = 0; i < 8; i++) {
                 const int tok = (tt0 + nj) * 16 + 2 * i + h;
-                if (tok < N) out[(size_t) tok * M + feat] = tot[mi][nj][i] * (sf * dr[i]);
+                if (tok < N) { const size_t oi = (size_t) tok * M + feat; out[oi] = tot[mi][nj][i] * (sf * dr[i]) + (res ? res[oi] : 0.f); }
             }
         }
     }
@@ -904,7 +904,7 @@ void ggml_cuda_int4_rot_q8_1(const ggml_tensor * src1, void * q8_1, cudaStream_t
     CUDA_CHECK(cudaGetLastError());
 }
 
-bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const float * glu_x, const float * glu_y) {
+bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const float * glu_x, const float * glu_y, const float * res) {
     if (int4_mode() < 2) return false;
     const int cc = ggml_cuda_info().devices[ctx.device].cc;
     if (!GGML_CUDA_CC_IS_RDNA3_0(cc)) return false;
@@ -947,16 +947,16 @@ bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor *
     if (a8) {
         if (!packed) k_rot_pack8<<<N, 256, smem, stream>>>(glu_x ? glu_x : (const float *) src1->data, K, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, glu_y);
         switch (w.gw) {
-            case 2:  k_gemm8w<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
-            case 4:  k_gemm8w<4><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
-            default: k_gemm8<<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
+            case 2:  k_gemm8w<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
+            case 4:  k_gemm8w<4><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
+            default: k_gemm8<<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
         }
     } else {
         if (!packed) k_rot_pack<<<N, 256, smem, stream>>>(glu_x ? glu_x : (const float *) src1->data, K, x4_ptr, xm_ptr, xr_ptr, int4_clip(), glu_y);
         switch (w.gw) {
-            case 1:  k_gemm<1><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
-            case 2:  k_gemm<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
-            default: k_gemm<4><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K); break;
+            case 1:  k_gemm<1><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
+            case 2:  k_gemm<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
+            default: k_gemm<4><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
         }
     }
     CUDA_CHECK(cudaGetLastError());
@@ -1032,7 +1032,7 @@ bool ggml_cuda_int4_rotated(const ggml_tensor *) { return false; }
 void ggml_cuda_int4_rotate(ggml_backend_cuda_context &, const ggml_tensor *, float *) {}
 bool ggml_cuda_int4_fused_ok(const ggml_tensor *) { return false; }
 void ggml_cuda_int4_rot_q8_1(const ggml_tensor *, void *, cudaStream_t) {}
-bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const float *, const float *) { return false; }
+bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const float *, const float *, const float *) { return false; }
 bool ggml_cuda_int4_converted(const ggml_tensor *) { return false; }
 void ggml_cuda_int4_prepare(ggml_backend_cuda_context &, const ggml_cgraph *) {}
 void ggml_cuda_int4_matvec(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const ggml_cuda_mm_fusion_args_host *) {}
