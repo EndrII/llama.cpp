@@ -870,6 +870,13 @@ struct ActCache {
     float *   xr = nullptr; size_t xr_cap = 0;
 };
 std::unordered_map<cudaStream_t, ActCache> g_ac;
+struct MvCache {                                  // same idea for the decode matvec: int8 rotated activations + per-group scales
+    const ggml_tensor * src1 = nullptr;
+    int K = 0, N = 0;
+    int8_t * xq = nullptr; size_t xq_cap = 0;
+    float2 * xd = nullptr; size_t xd_cap = 0;
+};
+std::unordered_map<cudaStream_t, MvCache> g_mc;
 bool act_cache_enabled() { static const bool e = !getenv("GGML_INT4_NOCACHE"); return e; }
 template <typename T> void ac_reserve(T *& p, size_t & cap, size_t bytes) {
     if (bytes <= cap) return;
@@ -972,7 +979,7 @@ bool ggml_cuda_int4_converted(const ggml_tensor * src0) {
 }
 
 void ggml_cuda_int4_prepare(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph) {
-    { std::lock_guard<std::mutex> lk(g_mu); for (auto & kv : g_ac) kv.second.src1 = nullptr; }
+    { std::lock_guard<std::mutex> lk(g_mu); for (auto & kv : g_ac) kv.second.src1 = nullptr; for (auto & kv : g_mc) kv.second.src1 = nullptr; }
     if (int4_mode() < 2 || !int4_inplace()) return;
     if (!GGML_CUDA_CC_IS_RDNA3_0(ggml_cuda_info().devices[ctx.device].cc)) return;
     for (int i = 0; i < cgraph->n_nodes; i++) {
@@ -1012,15 +1019,31 @@ void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * 
         if (fusion->gate_bias) gb = (const float *) fusion->gate_bias->data;
         if (fusion->gate) { g = get_weights(stream, fusion->gate); GGML_ASSERT(g.inplace && fusion->gate->ne[1] == M && fusion->gate->ne[0] == K); gate = true; glu = (int) fusion->glu_op; }
     }
-    ggml_cuda_pool_alloc<int8_t> xq(ctx.pool(), (size_t) N * K);
-    ggml_cuda_pool_alloc<float2> xd(ctx.pool(), (size_t) N * (K / 32));
-    k_rot_q8x<<<dim3(K / 256, N), 32, 0, stream>>>((const float *) src1->data, xq.get(), xd.get(), K);
+    int8_t * xq_ptr; float2 * xd_ptr;
+    ggml_cuda_pool_alloc<int8_t> xq_pool(ctx.pool());
+    ggml_cuda_pool_alloc<float2> xd_pool(ctx.pool());
+    if (act_cache_enabled()) {
+        bool packed;
+        {
+            std::lock_guard<std::mutex> lk(g_mu);
+            MvCache & mc = g_mc[stream];
+            packed = mc.src1 == src1 && mc.K == K && mc.N == N;
+            ac_reserve(mc.xq, mc.xq_cap, (size_t) N * K); ac_reserve(mc.xd, mc.xd_cap, (size_t) N * (K / 32) * sizeof(float2));
+            xq_ptr = mc.xq; xd_ptr = mc.xd;
+            if (!packed) { mc.src1 = src1; mc.K = K; mc.N = N; }
+        }
+        if (!packed) k_rot_q8x<<<dim3(K / 256, N), 32, 0, stream>>>((const float *) src1->data, xq_ptr, xd_ptr, K);
+    } else {
+        xq_pool.alloc((size_t) N * K); xd_pool.alloc((size_t) N * (K / 32));
+        xq_ptr = xq_pool.get(); xd_ptr = xd_pool.get();
+        k_rot_q8x<<<dim3(K / 256, N), 32, 0, stream>>>((const float *) src1->data, xq_ptr, xd_ptr, K);
+    }
     const float inv = 1.f / (float) (1 << w.sh), inv2 = gate ? 1.f / (float) (1 << g.sh) : 0.f;
     const int stride_dst = M;
     const dim3 grid(M / 16), blk(32, MV_NW);
 #define MV_CASE(NCV) \
-    case NCV: if (gate) k_mv<NCV, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, g.Wp, g.Wh, g.S, inv2, xq.get(), xd.get(), (float *) dst->data, xb, gb, glu, M, K, stride_dst); \
-              else      k_mv<NCV, false><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, nullptr, nullptr, nullptr, 0.f, xq.get(), xd.get(), (float *) dst->data, xb, gb, glu, M, K, stride_dst); break;
+    case NCV: if (gate) k_mv<NCV, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, g.Wp, g.Wh, g.S, inv2, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst); \
+              else      k_mv<NCV, false><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, nullptr, nullptr, nullptr, 0.f, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst); break;
     switch (N) { MV_CASE(1) MV_CASE(2) MV_CASE(3) MV_CASE(4) MV_CASE(5) MV_CASE(6) MV_CASE(7) MV_CASE(8) }
 #undef MV_CASE
     CUDA_CHECK(cudaGetLastError());
