@@ -3376,6 +3376,28 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                     if (bias->type == GGML_TYPE_F32 && scl->type == GGML_TYPE_F32 && ggml_nelements(bias) == M && ggml_nelements(scl) == M &&
                         ggml_is_contiguous(bias) && ggml_is_contiguous(scl) && mu->type == GGML_TYPE_F32 && ggml_is_contiguous(mu) &&
                         ggml_nelements(mu) == ggml_nelements(node) && n2->type == GGML_TYPE_F32) {
+                        // decode: the beta projection (same activations) follows right after; one launch for both
+                        int bj = -1;
+                        for (int j = i + 5; j < cgraph->n_nodes && j < i + 12; j++) {
+                            const ggml_tensor * b = cgraph->nodes[j];
+                            if (b->op == GGML_OP_VIEW || b->op == GGML_OP_RESHAPE || b->op == GGML_OP_PERMUTE || b->op == GGML_OP_TRANSPOSE || b->op == GGML_OP_NONE) { continue; }
+                            if (b->op == GGML_OP_MUL_MAT && b->src[0]->type == GGML_TYPE_BF16 && b->src[1] == node->src[1] && j + 2 < cgraph->n_nodes) { bj = j; }
+                            break;
+                        }
+                        if (bj >= 0 && node->src[1]->ne[1] * node->src[1]->ne[2] * node->src[1]->ne[3] <= 8) {
+                            const ggml_tensor * bm = cgraph->nodes[bj];
+                            ggml_tensor * bsig = nullptr;
+                            for (int j = bj + 1; j < cgraph->n_nodes && j < bj + 4; j++) {
+                                if (cgraph->nodes[j]->op == GGML_OP_UNARY && ggml_get_unary_op(cgraph->nodes[j]) == GGML_UNARY_OP_SIGMOID) { bsig = cgraph->nodes[j]; break; }
+                                if (cgraph->nodes[j]->op != GGML_OP_RESHAPE) { break; }
+                            }
+                            if (bsig && ggml_nelements(bsig) == ggml_nelements(mu) && bsig->type == GGML_TYPE_F32 && ggml_is_contiguous(bsig) && ggml_node_has_n_uses(cgraph, bj, 1) &&
+                                ggml_cuda_mul_mat_skinny_pair_rdna3(*cuda_ctx, node->src[0], bm->src[0], node->src[1], mu, 2, (const float *) bias->data, (const float *) scl->data, bsig, 1)) {
+                                std::lock_guard<std::mutex> lk(g_done_mu);
+                                g_done_nodes.insert(bm); g_done_nodes.insert(bsig);
+                                return 4;
+                            }
+                        }
                         if (ggml_cuda_mul_mat_skinny_rdna3(*cuda_ctx, node->src[0], node->src[1], mu, 2, (const float *) bias->data, (const float *) scl->data)) { return 4; }
                     }
                 }

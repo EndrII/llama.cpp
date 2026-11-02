@@ -103,8 +103,10 @@ __global__ void __launch_bounds__(SK_W * 32) sk_kernel(const __bf16 * __restrict
 
 
 // decode (1..8 tokens): one 128-thread block per output, f32 dot product over K (bf16 weights, f32 activations, like mul_mat_vec_f)
-__global__ void __launch_bounds__(128) sk_decode_kernel(const __bf16 * __restrict__ W, const float * __restrict__ X, float * __restrict__ out, int M, int N, int K,
-                                                         int epi, const float * __restrict__ bias, const float * __restrict__ scl) {
+struct sk_job { const __bf16 * W; float * out; int epi; const float * bias; const float * scl; };
+__global__ void __launch_bounds__(128) sk_decode_kernel(const sk_job j0, const sk_job j1, const float * __restrict__ X, int M, int N, int K) {
+    const sk_job job = blockIdx.y ? j1 : j0;
+    const __bf16 * __restrict__ W = job.W; float * __restrict__ out = job.out; const int epi = job.epi; const float * bias = job.bias; const float * scl = job.scl;
     const int c = blockIdx.x, tid = threadIdx.x, w = tid >> 5, lane = tid & 31;
     float acc[8];
 #pragma unroll
@@ -154,7 +156,8 @@ bool ggml_cuda_mul_mat_skinny_rdna3(ggml_backend_cuda_context & ctx, const ggml_
     if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst) || (epi == 0 && dst->ne[0] != M) || ggml_nelements(dst) != N * M) { return false; }
     if (((uintptr_t) src0->data & 15) || ((uintptr_t) src1->data & 15)) { return false; }
     if (decode) {
-        sk_decode_kernel<<<(unsigned) M, 128, 0, ctx.stream()>>>((const __bf16 *) src0->data, (const float *) src1->data, (float *) dst->data, (int) M, (int) N, (int) K, epi, bias, scl);
+        const sk_job j = { (const __bf16 *) src0->data, (float *) dst->data, epi, bias, scl };
+        sk_decode_kernel<<<dim3((unsigned) M, 1), 128, 0, ctx.stream()>>>(j, j, (const float *) src1->data, (int) M, (int) N, (int) K);
         CUDA_CHECK(cudaGetLastError());
         return true;
     }
@@ -168,3 +171,22 @@ bool ggml_cuda_mul_mat_skinny_rdna3(ggml_backend_cuda_context & ctx, const ggml_
 bool ggml_cuda_mul_mat_skinny_rdna3(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, int, const float *, const float *) { return false; }
 
 #endif // GGML_USE_HIP
+
+#if defined(GGML_USE_HIP)
+// decode: two skinny projections that share their activations (GDN alpha and beta) in one launch
+bool ggml_cuda_mul_mat_skinny_pair_rdna3(ggml_backend_cuda_context & ctx, const ggml_tensor * w0, const ggml_tensor * w1, const ggml_tensor * src1,
+                                         ggml_tensor * dst0, int epi0, const float * bias0, const float * scl0, ggml_tensor * dst1, int epi1) {
+    if (!GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[ctx.device].cc)) { return false; }
+    const int64_t K = w0->ne[0], M = w0->ne[1], N = src1->ne[1] * src1->ne[2] * src1->ne[3];
+    if (w0->type != GGML_TYPE_BF16 || w1->type != GGML_TYPE_BF16 || src1->type != GGML_TYPE_F32 || w1->ne[0] != K || w1->ne[1] != M || N < 1 || N > 8 || K % 8 || M > 32) { return false; }
+    if (!ggml_is_contiguous(w0) || !ggml_is_contiguous(w1) || !ggml_is_contiguous(src1) || ggml_nelements(dst0) != N * M || ggml_nelements(dst1) != N * M) { return false; }
+    if (((uintptr_t) w0->data & 15) || ((uintptr_t) w1->data & 15)) { return false; }
+    const sk_job j0 = { (const __bf16 *) w0->data, (float *) dst0->data, epi0, bias0, scl0 };
+    const sk_job j1 = { (const __bf16 *) w1->data, (float *) dst1->data, epi1, nullptr, nullptr };
+    sk_decode_kernel<<<dim3((unsigned) M, 2), 128, 0, ctx.stream()>>>(j0, j1, (const float *) src1->data, (int) M, (int) N, (int) K);
+    CUDA_CHECK(cudaGetLastError());
+    return true;
+}
+#else
+bool ggml_cuda_mul_mat_skinny_pair_rdna3(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, int, const float *, const float *, ggml_tensor *, int) { return false; }
+#endif
