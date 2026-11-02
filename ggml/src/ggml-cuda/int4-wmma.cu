@@ -733,31 +733,36 @@ __global__ __launch_bounds__(32) void k_rot_q8x(const float * __restrict__ X, in
 
 
 // RMS norm * weight (f32 output kept for the other consumers) fused with the rotation + 8-bit quantization of the decode matvec:
-// one block per token, one wave per 256-block of K.
+// one block per token, one wave per 256-block of K; each lane holds row lc of its wave's 16x16 view (the rotation's own layout), so the normalized values
+// go straight into the rotation without a round trip through memory.
 __global__ __launch_bounds__(1024) void k_rmsnorm_rot_q8x(const float * __restrict__ X, const float * __restrict__ Wt, float * __restrict__ Y, int8_t * __restrict__ Q, float2 * __restrict__ D, int K, float eps) {
     const int n = blockIdx.x, wave = threadIdx.x >> 5, lane = threadIdx.x & 31, h = lane >> 4, lc = lane & 15, nsb = blockDim.x >> 5;
     __shared__ float part[32];
-    const float * xr = X + (size_t) n * K + wave * 256 + lane * 8;
-    const float4 x0 = *(const float4 *) xr, x1 = *(const float4 *) (xr + 4);
-    float ss = x0.x * x0.x + x0.y * x0.y + x0.z * x0.z + x0.w * x0.w + x1.x * x1.x + x1.y * x1.y + x1.z * x1.z + x1.w * x1.w;
-    ss = wave32_sum(ss);
+    float4 xr[4], wr4[4];
+#pragma unroll
+    for (int q = 0; q < 4; q++) { xr[q] = ((const float4 *) (X + (size_t) n * K + wave * 256 + lc * 16))[q]; wr4[q] = ((const float4 *) (Wt + wave * 256 + lc * 16))[q]; }
+    float ss = 0.f;
+#pragma unroll
+    for (int q = 0; q < 4; q++) ss += xr[q].x * xr[q].x + xr[q].y * xr[q].y + xr[q].z * xr[q].z + xr[q].w * xr[q].w;
+    ss = wave32_sum(ss) * 0.5f;                       // both lane halves hold the same 256 values
     if (lane == 0) part[wave] = ss;
     __syncthreads();
     float tot = 0.f;
     for (int i = 0; i < nsb; i++) tot += part[i];
     const float scale = rsqrtf(tot / (float) K + eps);
-    const float4 w0 = *(const float4 *) (Wt + wave * 256 + lane * 8), w1 = *(const float4 *) (Wt + wave * 256 + lane * 8 + 4);
-    float4 y0, y1;
-    y0.x = scale * x0.x * w0.x; y0.y = scale * x0.y * w0.y; y0.z = scale * x0.z * w0.z; y0.w = scale * x0.w * w0.w;
-    y1.x = scale * x1.x * w1.x; y1.y = scale * x1.y * w1.y; y1.z = scale * x1.z * w1.z; y1.w = scale * x1.w * w1.w;
-    float * yr = Y + (size_t) n * K + wave * 256 + lane * 8;
-    *(float4 *) yr = y0; *(float4 *) (yr + 4) = y1;
-    __syncthreads();                     // the wave reads its 256 normalized values back in the rotation's own layout
-    __threadfence_block();
+    float4 v[4];
+#pragma unroll
+    for (int q = 0; q < 4; q++) {
+        v[q].x = scale * xr[q].x * wr4[q].x; v[q].y = scale * xr[q].y * wr4[q].y; v[q].z = scale * xr[q].z * wr4[q].z; v[q].w = scale * xr[q].w * wr4[q].w;
+    }
+    if (h == 0) {
+#pragma unroll
+        for (int q = 0; q < 4; q++) *(float4 *) (Y + (size_t) n * K + wave * 256 + lc * 16 + q * 4) = v[q];
+    }
     half16v b1, a2;
 #pragma unroll
     for (int k = 0; k < 16; k++) { b1[k] = h16(k, lc); a2[k] = h16(lc, k < 8 ? 2 * k : 2 * (k - 8) + 1); }
-    const float8v w = rotate_block(Y + (size_t) n * K + wave * 256, lane, b1, a2);
+    const float8v w = rotate_regs(v, lane, b1, a2);
 #pragma unroll
     for (int i = 0; i < 8; i++) {
         const float x = w[i] * 0.0625f;
