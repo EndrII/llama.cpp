@@ -53,11 +53,12 @@ struct fa3_params {
     float scale;
 };
 
-__global__ void __launch_bounds__(128, 1) fa3_kernel(const fa3_params p) {
+__global__ void __launch_bounds__(256, 1) fa3_kernel(const fa3_params p) {
     const int tid = threadIdx.x, w = tid >> 5, lane = tid & 31, hh = lane >> 4, lc = lane & 15;
+    const int wr = w & 3, wd = w >> 2;                       // row group; half of the head dimension this wave accumulates
     const int gqa = (int) p.gqa;
     const int tok_per_blk = FA_R / gqa;
-    const int64_t tok0 = (int64_t) blockIdx.x * tok_per_blk;
+    const int64_t tok0 = (int64_t) (gridDim.x - 1 - blockIdx.x) * tok_per_blk;      // longest causal prefixes are scheduled first
     const int g = blockIdx.y, seq = blockIdx.z;                 // kv head, sequence
 
     extern __shared__ __align__(16) unsigned char fa3_smem[];
@@ -67,7 +68,7 @@ __global__ void __launch_bounds__(128, 1) fa3_kernel(const fa3_params p) {
     int * kv_range = (int *) (pb + 4 * 16 * FA_PP);             // [2]
 
     // ---- Q tile: f32 -> f16, row r = (token, head) with r = token_in_block * gqa + head_in_group
-    for (int idx = tid; idx < FA_R * (FA_D / 4); idx += 128) {
+    for (int idx = tid; idx < FA_R * (FA_D / 4); idx += 256) {
         const int r = idx / (FA_D / 4), c4 = idx % (FA_D / 4);
         const int64_t tk = tok0 + r / gqa;
         const int head = g * gqa + r % gqa;
@@ -86,7 +87,7 @@ __global__ void __launch_bounds__(128, 1) fa3_kernel(const fa3_params p) {
         const int per_row = (int) (p.n_kv / 8);
         const char * mb = p.mask + (seq % p.m_ne3) * p.m_nb3;
         int lo = 1 << 30, hi = -1;
-        for (int idx = tid; idx < ntok * per_row; idx += 128) {
+        for (int idx = tid; idx < ntok * per_row; idx += 256) {
             const int r = idx / per_row, c8 = idx % per_row;
             const uint4 u = *(const uint4 *) (mb + (tok0 + r) * p.m_nb1 + (size_t) c8 * 16);
             const uint32_t ws[4] = { u.x, u.y, u.z, u.w };
@@ -102,9 +103,9 @@ __global__ void __launch_bounds__(128, 1) fa3_kernel(const fa3_params p) {
     __syncthreads();
     const int t_lo = kv_range[0], t_hi = kv_range[1];
 
-    fa3_f8 o[16];
+    fa3_f8 o[8];
 #pragma unroll
-    for (int j = 0; j < 16; j++) { o[j] = fa3_f8{0, 0, 0, 0, 0, 0, 0, 0}; }
+    for (int j = 0; j < 8; j++) { o[j] = fa3_f8{0, 0, 0, 0, 0, 0, 0, 0}; }
     float m_run[8], l_run[8];
 #pragma unroll
     for (int i = 0; i < 8; i++) { m_run[i] = -INFINITY; l_run[i] = 0.f; }
@@ -112,14 +113,14 @@ __global__ void __launch_bounds__(128, 1) fa3_kernel(const fa3_params p) {
     const char * kb = p.k + seq * p.k_nb3 + (size_t) g * p.k_nb2;
     const char * vb = p.v + seq * p.v_nb3 + (size_t) g * p.v_nb2;
     const char * mb = p.mask ? p.mask + (seq % p.m_ne3) * p.m_nb3 : nullptr;
-    _Float16 * pw = pb + w * 16 * FA_PP;
+    _Float16 * pw = pb + wr * 16 * FA_PP;
 
-    uint4 kr[8], vr[8];
+    uint4 kr[4], vr[4];
     _Float16 mr[8][2];
     auto load_k = [&](int64_t kv0) {
 #pragma unroll
-        for (int e = 0; e < 8; e++) {
-            const int idx = tid + 128 * e, r = idx >> 5, c8 = idx & 31;
+        for (int e = 0; e < 4; e++) {
+            const int idx = tid + 256 * e, r = idx >> 5, c8 = idx & 31;
             kr[e] = *(const uint4 *) (kb + (kv0 + r) * p.k_nb1 + c8 * 16);
         }
     };
@@ -129,16 +130,16 @@ __global__ void __launch_bounds__(128, 1) fa3_kernel(const fa3_params p) {
         const int64_t kv0 = (int64_t) t * FA_KT;
         __syncthreads();                                    // previous tile's P V has finished reading the tile buffer
 #pragma unroll
-        for (int e = 0; e < 8; e++) {
-            const int idx = tid + 128 * e, r = idx >> 5, c8 = idx & 31;
+        for (int e = 0; e < 4; e++) {
+            const int idx = tid + 256 * e, r = idx >> 5, c8 = idx & 31;
             *(uint4 *) (kv + r * FA_DP + c8 * 8) = kr[e];
         }
         // this tile's V rows (lane = K/V position, wave = quarter of the head dim) and mask values, in flight during S
 #pragma unroll
-        for (int q = 0; q < 8; q++) { vr[q] = *(const uint4 *) (vb + (kv0 + lane) * p.v_nb1 + (64 * w + 8 * q) * 2); }
+        for (int q = 0; q < 4; q++) { vr[q] = *(const uint4 *) (vb + (kv0 + lane) * p.v_nb1 + (32 * w + 8 * q) * 2); }
 #pragma unroll
         for (int i = 0; i < 8; i++) {
-            const int row = 16 * w + 2 * i + hh;
+            const int row = 16 * wr + 2 * i + hh;
             const int64_t tk = min(tok0 + row / gqa, p.n_tokens - 1);
             if (mb) {
                 const _Float16 * mrow = (const _Float16 *) (mb + tk * p.m_nb1) + kv0;
@@ -151,7 +152,7 @@ __global__ void __launch_bounds__(128, 1) fa3_kernel(const fa3_params p) {
         fa3_f8 s[2] = { fa3_f8{0, 0, 0, 0, 0, 0, 0, 0}, fa3_f8{0, 0, 0, 0, 0, 0, 0, 0} };
 #pragma unroll
         for (int ks = 0; ks < 16; ks++) {
-            const fa3_h16 a = fa3_ld16(qs + (16 * w + lc) * FA_DP + 16 * ks);
+            const fa3_h16 a = fa3_ld16(qs + (16 * wr + lc) * FA_DP + 16 * ks);
 #pragma unroll
             for (int nt = 0; nt < 2; nt++) { s[nt] = fa3_wmma(a, fa3_ld16(kv + (16 * nt + lc) * FA_DP + 16 * ks), s[nt]); }
         }
@@ -167,7 +168,7 @@ __global__ void __launch_bounds__(128, 1) fa3_kernel(const fa3_params p) {
             const float a_i = m_new == -INFINITY ? 1.f : __expf(m_run[i] - m_new);
             const float p0 = m_new == -INFINITY ? 0.f : __expf(x0 - m_new), p1 = m_new == -INFINITY ? 0.f : __expf(x1 - m_new);
 #pragma unroll
-            for (int j = 0; j < 16; j++) { o[j][i] *= a_i; }
+            for (int j = 0; j < 8; j++) { o[j][i] *= a_i; }
             l_run[i] = l_run[i] * a_i + p0 + p1;
             m_run[i] = m_new;
             pw[(2 * i + hh) * FA_PP + lc]      = (_Float16) p0;
@@ -178,19 +179,19 @@ __global__ void __launch_bounds__(128, 1) fa3_kernel(const fa3_params p) {
         // ---- V^T into the tile buffer: Vt[d][position], lanes contiguous in position
         __syncthreads();
 #pragma unroll
-        for (int q = 0; q < 8; q++) {
+        for (int q = 0; q < 4; q++) {
             const _Float16 * uh = (const _Float16 *) &vr[q];
 #pragma unroll
-            for (int m = 0; m < 8; m++) { kv[(64 * w + 8 * q + m) * FA_VP + lane] = uh[m]; }
+            for (int m = 0; m < 8; m++) { kv[(32 * w + 8 * q + m) * FA_VP + lane] = uh[m]; }
         }
         __syncthreads();
         if (t < t_hi) { load_k((int64_t) (t + 1) * FA_KT); }        // next K tile in flight during P V
 
         // ---- O += P V
 #pragma unroll
-        for (int j = 0; j < 16; j++) {
-            o[j] = fa3_wmma(pa0, fa3_ld16(kv + (16 * j + lc) * FA_VP), o[j]);
-            o[j] = fa3_wmma(pa1, fa3_ld16(kv + (16 * j + lc) * FA_VP + 16), o[j]);
+        for (int j = 0; j < 8; j++) {
+            o[j] = fa3_wmma(pa0, fa3_ld16(kv + (16 * (8 * wd + j) + lc) * FA_VP), o[j]);
+            o[j] = fa3_wmma(pa1, fa3_ld16(kv + (16 * (8 * wd + j) + lc) * FA_VP + 16), o[j]);
         }
     }
 
@@ -201,13 +202,13 @@ __global__ void __launch_bounds__(128, 1) fa3_kernel(const fa3_params p) {
 #pragma unroll
         for (int o2 = 8; o2 > 0; o2 >>= 1) { l += __shfl_xor(l, o2, 32); }
         const float inv = l > 0.f ? 1.f / l : 0.f;
-        const int row = 16 * w + 2 * i + hh;
+        const int row = 16 * wr + 2 * i + hh;
         const int64_t tk = tok0 + row / gqa;
         if (tk >= p.n_tokens) { continue; }
         const int head = g * gqa + row % gqa;
         float * d = (float *) (p.dst + seq * p.d_nb3 + tk * p.d_nb2 + (size_t) head * p.d_nb1);
 #pragma unroll
-        for (int j = 0; j < 16; j++) { d[16 * j + lc] = o[j][i] * inv; }
+        for (int j = 0; j < 8; j++) { d[16 * (8 * wd + j) + lc] = o[j][i] * inv; }
     }
 }
 
@@ -244,7 +245,7 @@ bool ggml_cuda_flash_attn_ext_rdna3(ggml_backend_cuda_context & ctx, ggml_tensor
     const size_t smem = ((size_t) FA_R * FA_DP + (size_t) std::max(FA_D * FA_VP, FA_KT * FA_DP) + 4 * 16 * FA_PP) * sizeof(_Float16) + 2 * sizeof(int);
     const int tok_per_blk = FA_R / gqa;
     const dim3 grid((unsigned) ((Q->ne[1] + tok_per_blk - 1) / tok_per_blk), (unsigned) K->ne[2], (unsigned) Q->ne[3]);
-    fa3_kernel<<<grid, 128, smem, ctx.stream()>>>(p);
+    fa3_kernel<<<grid, 256, smem, ctx.stream()>>>(p);
     CUDA_CHECK(cudaGetLastError());
     return true;
 }
