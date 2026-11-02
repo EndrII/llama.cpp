@@ -3980,6 +3980,16 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
             }
         }
         if (mm && mm->op == GGML_OP_MUL_MAT && ggml_cuda_int4_rotated(mm->src[0]) && ggml_cuda_int4_converted(mm->src[0]) &&
+            mm->src[1]->ne[1] * mm->src[1]->ne[2] * mm->src[1]->ne[3] <= MMVQ_MAX_BATCH_SIZE) {
+            // decode: silu(a) * b folded into the matvec's rotation, residual add into its epilogue
+            const float * res = nullptr; ggml_tensor * add = nullptr; const ggml_tensor * res_t = nullptr;
+            const int r = ggml_cuda_int4_residual_add(cgraph, i + extra, &res, &add, &res_t);
+            ggml_cuda_mm_fusion_args_host fusion_args;
+            fusion_args.x_bias = r ? res_t : nullptr;
+            ggml_cuda_int4_matvec(*cuda_ctx, mm->src[0], mm->src[1], r ? add : cgraph->nodes[i + extra], r ? &fusion_args : nullptr, xa, xb);
+            return extra + r;
+        }
+        if (mm && mm->op == GGML_OP_MUL_MAT && ggml_cuda_int4_rotated(mm->src[0]) && ggml_cuda_int4_converted(mm->src[0]) &&
             mm->src[1]->ne[1] * mm->src[1]->ne[2] * mm->src[1]->ne[3] > MMVQ_MAX_BATCH_SIZE &&
             true) {
             const float * res = nullptr; ggml_tensor * add = nullptr;

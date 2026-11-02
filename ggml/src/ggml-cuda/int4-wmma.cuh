@@ -30,6 +30,7 @@ bool ggml_cuda_int4_converted(const ggml_tensor * src0);
 void ggml_cuda_int4_prepare(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph);
 // decode-sized matmul (<= 8 tokens) on converted weights: fused rotate+Q8 quantisation, then a matvec on the repacked layout; supports the
 // gate/bias/GLU fusion of mul_mat_vec_q
-void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion);
+void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion,
+                            const float * glu_x = nullptr, const float * glu_y = nullptr);
 // the device buffer [ptr, ptr+size) is going away: forget converted tensors inside it
 void ggml_cuda_int4_forget(const void * ptr, size_t size);

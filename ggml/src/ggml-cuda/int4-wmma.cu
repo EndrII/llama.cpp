@@ -647,12 +647,12 @@ __global__ __launch_bounds__(32) void k_rot_q8_1(const float * __restrict__ X, b
 }
 
 // rotate + 8-bit quantize for the decode matvec: int8 codes [n][K] and per 32-group (d, d*sum(q)) so the matvec can use the exact code sum
-__global__ __launch_bounds__(32) void k_rot_q8x(const float * __restrict__ X, int8_t * __restrict__ Q, float2 * __restrict__ D, int K) {
+__global__ __launch_bounds__(32) void k_rot_q8x(const float * __restrict__ X, int8_t * __restrict__ Q, float2 * __restrict__ D, int K, const float * __restrict__ Y = nullptr) {
     const int sb = blockIdx.x, n = blockIdx.y, lane = threadIdx.x, h = lane >> 4, lc = lane & 15;
     half16v b1, a2;
 #pragma unroll
     for (int k = 0; k < 16; k++) { b1[k] = h16(k, lc); a2[k] = h16(lc, k < 8 ? 2 * k : 2 * (k - 8) + 1); }
-    const float8v w = rotate_block(X + (size_t) n * K + sb * 256, lane, b1, a2);
+    const float8v w = rotate_block(X + (size_t) n * K + sb * 256, lane, b1, a2, Y ? Y + (size_t) n * K + sb * 256 : nullptr);
 #pragma unroll
     for (int i = 0; i < 8; i++) {
         const float x = w[i] * 0.0625f;
@@ -1070,7 +1070,7 @@ bool ggml_cuda_int4_rmsnorm_rot(ggml_backend_cuda_context & ctx, const ggml_tens
     return true;
 }
 
-void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion) {
+void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion, const float * glu_x, const float * glu_y) {
     const int K = (int) src0->ne[0], M = (int) src0->ne[1], N = (int) (src1->ne[1] * src1->ne[2] * src1->ne[3]);
     GGML_ASSERT(N >= 1 && N <= 8 && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && src1->ne[0] == K);
     GGML_ASSERT(dst->type == GGML_TYPE_F32 && dst->ne[0] == M && ggml_is_contiguous(dst));
@@ -1100,11 +1100,11 @@ void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * 
             xq_ptr = mc.xq; xd_ptr = mc.xd;
             if (!packed) { mc.src1 = src1; mc.K = K; mc.N = N; }
         }
-        if (!packed) k_rot_q8x<<<dim3(K / 256, N), 32, 0, stream>>>((const float *) src1->data, xq_ptr, xd_ptr, K);
+        if (!packed) k_rot_q8x<<<dim3(K / 256, N), 32, 0, stream>>>(glu_x ? glu_x : (const float *) src1->data, xq_ptr, xd_ptr, K, glu_y);
     } else {
         xq_pool.alloc((size_t) N * K); xd_pool.alloc((size_t) N * (K / 32));
         xq_ptr = xq_pool.get(); xd_ptr = xd_pool.get();
-        k_rot_q8x<<<dim3(K / 256, N), 32, 0, stream>>>((const float *) src1->data, xq_ptr, xd_ptr, K);
+        k_rot_q8x<<<dim3(K / 256, N), 32, 0, stream>>>(glu_x ? glu_x : (const float *) src1->data, xq_ptr, xd_ptr, K, glu_y);
     }
     const float inv = 1.f / (float) (1 << w.sh), inv2 = gate ? 1.f / (float) (1 << g.sh) : 0.f;
     const int stride_dst = M;
@@ -1127,7 +1127,7 @@ void ggml_cuda_int4_rot_q8_1(const ggml_tensor *, void *, cudaStream_t) {}
 bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const float *, const float *, const float *) { return false; }
 bool ggml_cuda_int4_converted(const ggml_tensor *) { return false; }
 void ggml_cuda_int4_prepare(ggml_backend_cuda_context &, const ggml_cgraph *) {}
-void ggml_cuda_int4_matvec(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const ggml_cuda_mm_fusion_args_host *) {}
+void ggml_cuda_int4_matvec(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, const ggml_cuda_mm_fusion_args_host *, const float *, const float *) {}
 void ggml_cuda_int4_forget(const void *, size_t) {}
 
 #endif
