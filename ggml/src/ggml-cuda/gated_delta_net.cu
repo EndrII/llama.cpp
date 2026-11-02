@@ -166,6 +166,115 @@ gated_delta_net_cuda(const float * q,
     }
 }
 
+#if defined(GGML_USE_HIP)
+// RDNA (wave32), S_v == 128, scalar gate: a state column is split over two lanes (64 rows each), so a row reduction is one
+// lane exchange instead of five, and a wave owns 16 columns.  k/q of a token are staged per wave in LDS (double buffered).
+template <bool keep_rs_t>
+__global__ void __launch_bounds__(128, 2)
+gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k, const float * __restrict__ v,
+                     const float * __restrict__ g, const float * __restrict__ beta, const float * __restrict__ curr_state,
+                     float * __restrict__ dst, float * __restrict__ state,
+                     int64_t H, int64_t n_tokens, int64_t n_seqs,
+                     int64_t sq1, int64_t sq2, int64_t sq3, int64_t sv1, int64_t sv2, int64_t sv3,
+                     int64_t sb1, int64_t sb2, int64_t sb3,
+                     const uint3 neqk1_magic, const uint3 rq3_magic, float scale, int64_t state_slot_stride, int K) {
+    constexpr int S_v = 128, R = 64;
+    const uint32_t h_idx    = blockIdx.x;
+    const uint32_t sequence = blockIdx.y;
+    const int lane = threadIdx.x, half = lane >> 4, lc = lane & 15;
+    const int col  = blockIdx.z * 64 + threadIdx.y * 16 + lc;
+    const uint32_t iq1 = fastmodulo(h_idx, neqk1_magic);
+    const uint32_t iq3 = fastdiv(sequence, rq3_magic);
+
+    float * attn_data = dst + (sequence * n_tokens * H + h_idx) * S_v;
+    state += (sequence * H + h_idx) * S_v * S_v;
+    const float * st_in = curr_state + sequence * H * S_v * S_v + h_idx * S_v * S_v + col * S_v + half * R;
+
+    float s[R];
+#pragma unroll
+    for (int i = 0; i < R; i += 4) {
+        const float4 x = *(const float4 *) (st_in + i);
+        s[i] = x.x; s[i + 1] = x.y; s[i + 2] = x.z; s[i + 3] = x.w;
+    }
+
+    __shared__ __align__(16) float ks[4][2][S_v];
+    __shared__ __align__(16) float qs[4][2][S_v];
+    float (*kw)[S_v] = ks[threadIdx.y];
+    float (*qw)[S_v] = qs[threadIdx.y];
+    const float * kq0 = k + iq3 * sq3 + iq1 * sq1 + lane * 4;
+    const float * qq0 = q + iq3 * sq3 + iq1 * sq1 + lane * 4;
+    float4 kn = make_float4(0.f, 0.f, 0.f, 0.f), qn = kn;
+    if (n_tokens > 0) { kn = *(const float4 *) kq0; qn = *(const float4 *) qq0; }
+    *(float4 *) (kw[0] + lane * 4) = kn;
+    *(float4 *) (qw[0] + lane * 4) = qn;
+    asm volatile("" ::: "memory");
+
+    float v_nx = 0.f, beta_nx = 0.f, g_nx = 0.f;
+    if (n_tokens > 0) {
+        const int64_t gb0 = sequence * sb3 + h_idx * sb1;
+        v_nx = v[sequence * sv3 + h_idx * sv1 + col]; beta_nx = beta[gb0]; g_nx = g[gb0];
+    }
+
+    for (int t = 0; t < n_tokens; t++) {
+        const int cur = t & 1;
+        const float beta_val = beta_nx, g_val = expf(g_nx), v_val = v_nx;
+        if (t + 1 < n_tokens) {
+            kn = *(const float4 *) (kq0 + (t + 1) * sq2);
+            qn = *(const float4 *) (qq0 + (t + 1) * sq2);
+            const int64_t gb1 = sequence * sb3 + (t + 1) * sb2 + h_idx * sb1;
+            v_nx = v[sequence * sv3 + (t + 1) * sv2 + h_idx * sv1 + col]; beta_nx = beta[gb1]; g_nx = g[gb1];
+        }
+        const float * k_t = kw[cur] + half * R;
+        const float * q_t = qw[cur] + half * R;
+
+        float kv0 = 0.f, kv1 = 0.f, kv2 = 0.f, kv3 = 0.f;
+#pragma unroll
+        for (int i = 0; i < R; i += 4) {
+            const float4 kk = *(const float4 *) (k_t + i);
+            kv0 = fmaf(s[i], kk.x, kv0); kv1 = fmaf(s[i + 1], kk.y, kv1);
+            kv2 = fmaf(s[i + 2], kk.z, kv2); kv3 = fmaf(s[i + 3], kk.w, kv3);
+        }
+        float kv = (kv0 + kv1) + (kv2 + kv3);
+        kv += __shfl_xor(kv, 16, 32);
+        const float delta = (v_val - g_val * kv) * beta_val;
+
+        float a0 = 0.f, a1 = 0.f, a2 = 0.f, a3 = 0.f;
+#pragma unroll
+        for (int i = 0; i < R; i += 4) {
+            const float4 kk = *(const float4 *) (k_t + i), qq = *(const float4 *) (q_t + i);
+            s[i]     = fmaf(g_val, s[i],     kk.x * delta); a0 = fmaf(s[i],     qq.x, a0);
+            s[i + 1] = fmaf(g_val, s[i + 1], kk.y * delta); a1 = fmaf(s[i + 1], qq.y, a1);
+            s[i + 2] = fmaf(g_val, s[i + 2], kk.z * delta); a2 = fmaf(s[i + 2], qq.z, a2);
+            s[i + 3] = fmaf(g_val, s[i + 3], kk.w * delta); a3 = fmaf(s[i + 3], qq.w, a3);
+        }
+        float att = (a0 + a1) + (a2 + a3);
+        att += __shfl_xor(att, 16, 32);
+        if (half == 0) { attn_data[col] = att * scale; }
+        attn_data += S_v * H;
+
+        *(float4 *) (kw[cur ^ 1] + lane * 4) = kn;
+        *(float4 *) (qw[cur ^ 1] + lane * 4) = qn;
+        asm volatile("" ::: "memory");
+
+        if constexpr (keep_rs_t) {
+            const int target_slot = (int) n_tokens - 1 - t;
+            if (target_slot >= 0 && target_slot < K) {
+                float * cs = state + target_slot * state_slot_stride + col * S_v + half * R;
+#pragma unroll
+                for (int i = 0; i < R; i++) { cs[i] = s[i]; }
+            }
+        }
+    }
+
+    if constexpr (!keep_rs_t) {
+#pragma unroll
+        for (int i = 0; i < R; i += 4) {
+            *(float4 *) (state + col * S_v + half * R + i) = make_float4(s[i], s[i + 1], s[i + 2], s[i + 3]);
+        }
+    }
+}
+#endif // GGML_USE_HIP
+
 template <bool KDA, bool keep_rs_t>
 static void launch_gated_delta_net(
         const float * q_d, const float * k_d, const float * v_d,
@@ -208,6 +317,18 @@ static void launch_gated_delta_net(
             break;
         }
         case 128: {
+#if defined(GGML_USE_HIP)
+            if constexpr (!KDA) {
+                if (warp_size == 32) {
+                    const ggml_cuda_kernel_launch_params lp = ggml_cuda_kernel_launch_params(dim3(H, n_seqs, 2), dim3(32, 4, 1), 0, stream);
+                    ggml_cuda_kernel_launch(gated_delta_net_cols<keep_rs_t>, lp,
+                        q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d, H,
+                        n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                        sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K);
+                    break;
+                }
+            }
+#endif
             ggml_cuda_kernel_launch(gated_delta_net_cuda<128, KDA, keep_rs_t>, launch_params,
                 q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d, H,
                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,

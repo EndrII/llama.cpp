@@ -6,6 +6,8 @@
 //                 activations to int4 (one scale per token per 256-block, expressed as a 4-bit multiplier of a per-token reference),
 //                 then an int4 x int4 WMMA GEMM with integer sub-scales.
 //   GGML_INT4=3   as 2 but with 8-bit activations (two int4 WMMA passes: q = 16*hi + lo) - the quality mode, any weight group size.
+//   GGML_INT4_PREFILL=quality|balanced|fast  activation width per tensor kind in mode 3 (default quality = 8-bit everywhere; fast = 4-bit everywhere);
+//                 GGML_INT4_A4=<name substrings> overrides the list, GGML_INT4_CLIP (default 0.85) is the 4-bit activation clip factor.
 //   GGML_INT4_GW  K-groups of 32 that share one weight scale (1, 2 or 4; default 4) - must match how the model was quantized.
 //
 // The rotation follows Meta's HadaCore idea (H256 = H16 (x) H16 as two 16x16 matmuls); this is an independent RDNA3 implementation.
@@ -16,7 +18,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 #if defined(__GFX11__) || !defined(__HIP_DEVICE_COMPILE__)
 #define INT4W_DEVICE_OK 1
@@ -143,7 +147,7 @@ __global__ __launch_bounds__(32) void k_rot_f32(const float * __restrict__ X, fl
 }
 
 // fused rotate + quantize + pack: one 256-thread block per token (rotated fp16 row stays in LDS)
-__global__ __launch_bounds__(256) void k_rot_pack(const float * __restrict__ X, int K, uint8_t * __restrict__ X4p, uint8_t * __restrict__ XMp, float * __restrict__ XRp) {
+__global__ __launch_bounds__(256) void k_rot_pack(const float * __restrict__ X, int K, uint8_t * __restrict__ X4p, uint8_t * __restrict__ XMp, float * __restrict__ XRp, float clip) {
     extern __shared__ __align__(16) unsigned char fsm[];
     __half * xr = (__half *) fsm;
     float * amx = (float *) (fsm + (size_t) K * 2);
@@ -169,7 +173,7 @@ __global__ __launch_bounds__(256) void k_rot_pack(const float * __restrict__ X, 
     for (int idx = tid; idx < nsb * 8; idx += 256) {
         const int sb = idx >> 3, g = idx & 7;
         int mm = 1;
-        if (dref > 0.f) mm = max(1, min(16, (int) ceilf(16.f * (amx[sb] / 7.f) / dref - 1e-4f)));
+        if (dref > 0.f) mm = max(1, min(16, (int) ceilf(16.f * clip * (amx[sb] / 7.f) / dref - 1e-4f)));
         const float dsb = dref * mm / 16.f, inv = dsb > 0.f ? 1.f / dsb : 0.f;
         int q[32];
 #pragma unroll
@@ -642,6 +646,26 @@ int int4_gw() {
     static const int gw = [] { const char * e = getenv("GGML_INT4_GW"); int v = e ? atoi(e) : 4; return (v == 1 || v == 2 || v == 4) ? v : 4; }();
     return gw;
 }
+// per-tensor choice of the activation width in mode 3: GGML_INT4_A4=ffn_gate,ffn_up,... (substrings of the tensor name) selects 4-bit activations
+bool int4_use_a8(const ggml_tensor * src0) {
+    if (int4_mode() < 3) return false;
+    static const std::vector<std::string> a4 = [] {
+        std::vector<std::string> v; const char * e = getenv("GGML_INT4_A4");
+        if (!e) {      // presets: GGML_INT4_PREFILL=quality (default, 8-bit activations everywhere) | balanced | fast (4-bit activations everywhere)
+            const char * p = getenv("GGML_INT4_PREFILL");
+            if (p && !strcmp(p, "fast")) e = "attn_,ffn_,ssm_";
+            else if (p && !strcmp(p, "balanced")) e = "attn_q.weight,attn_k,attn_v,attn_qkv,attn_gate,ffn_gate,ffn_up";
+        }
+        if (e) { std::string s(e), cur; for (char c : s) { if (c == ',') { if (!cur.empty()) v.push_back(cur); cur.clear(); } else cur += c; } if (!cur.empty()) v.push_back(cur); }
+        return v;
+    }();
+    for (const auto & p : a4) { if (strstr(src0->name, p.c_str())) return false; }
+    return true;
+}
+float int4_clip() {
+    static const float c = [] { const char * e = getenv("GGML_INT4_CLIP"); return e ? (float) atof(e) : 0.85f; }();
+    return c;
+}
 int int4_min_n() {
     static const int n = [] { const char * e = getenv("GGML_INT4_MIN_N"); return e ? atoi(e) : 64; }();
     return n;
@@ -668,7 +692,7 @@ Int4Weights get_weights(cudaStream_t stream, const ggml_tensor * src0) {
         if (f & 1) w.gw = 1; else if (f & 2) w.gw = 2; else w.gw = 4;
     }
     k_row_scale<<<(M + 127) / 128, 128, 0, stream>>>((const block_q4_0 *) src0->data, M, K / 32, w.S);
-    k_repack<<<dim3(M, nsb), 8, 0, stream>>>((const block_q4_0 *) src0->data, K, nsb, w.S, w.Wp, w.Wh, int4_mode() >= 3 ? SH8 : SH);
+    k_repack<<<dim3(M, nsb), 8, 0, stream>>>((const block_q4_0 *) src0->data, K, nsb, w.S, w.Wp, w.Wh, int4_use_a8(src0) ? SH8 : SH);
     CUDA_CHECK(cudaGetLastError());
     g_w.emplace(src0->data, w);
     return w;
@@ -715,7 +739,7 @@ bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor *
     cudaStream_t stream = ctx.stream();
     const Int4Weights w = get_weights(stream, src0);
     const int nsb = K / 256, Npad = (N + TILE_N - 1) / TILE_N * TILE_N;
-    const bool a8 = int4_mode() >= 3;
+    const bool a8 = int4_use_a8(src0);
     const size_t plane = (size_t) Npad * K / 2;
     ggml_cuda_pool_alloc<uint8_t> x4(ctx.pool(), a8 ? 2 * plane : plane);
     ggml_cuda_pool_alloc<uint8_t> xm(ctx.pool(), (size_t) (Npad / 16) * nsb * 16);
@@ -733,7 +757,7 @@ bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor *
             default: k_gemm8<<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4.get(), x4.get() + plane, xm.get(), xr.get(), (float *) dst->data, M, N, K); break;
         }
     } else {
-        k_rot_pack<<<N, 256, smem, stream>>>((const float *) src1->data, K, x4.get(), xm.get(), xr.get());
+        k_rot_pack<<<N, 256, smem, stream>>>((const float *) src1->data, K, x4.get(), xm.get(), xr.get(), int4_clip());
         switch (w.gw) {
             case 1:  k_gemm<1><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4.get(), xm.get(), xr.get(), (float *) dst->data, M, N, K); break;
             case 2:  k_gemm<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4.get(), xm.get(), xr.get(), (float *) dst->data, M, N, K); break;
