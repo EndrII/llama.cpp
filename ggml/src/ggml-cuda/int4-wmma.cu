@@ -41,7 +41,10 @@ constexpr int SH = 10;                 // fixed-point bits of the integer sub-sc
 constexpr int SH8 = 12;                // same for the 8-bit activation kernel (GGML_INT4=3)
 constexpr int MI = 2, NJ = 2, WAVES_N = 8;
 constexpr int TILE_M = MI * 16;        // features per block
-constexpr int TILE_N = WAVES_N * NJ * 16;  // tokens per block
+constexpr int TILE_N = WAVES_N * NJ * 16;  // tokens per block (also the activation padding)
+// large weights (M * K at least this many) run the GEMM with 4 waves per block instead of WAVES_N (half the tokens per block, twice the blocks): +1.5-2% prefill on the 9B,
+// the 4B's weights stay below the threshold and keep the 8-wave launch
+static int64_t int4_wn4_min() { static const int64_t v = getenv("GGML_INT4_WN4_MIN") ? atoll(getenv("GGML_INT4_WN4_MIN")) : 30000000; return v; }
 
 #define INT4W_RSRC(p) __builtin_amdgcn_make_buffer_rsrc((void *)(p), 0, 0x7fffffff, 0x31004000)
 __device__ __forceinline__ int4v bl128(__amdgpu_buffer_rsrc_t r, int voff, int soff) { return __builtin_amdgcn_raw_buffer_load_b128(r, voff, soff, 0); }
@@ -309,8 +312,8 @@ __global__ __launch_bounds__(256) void k_rot_pack(const float * __restrict__ X, 
 }
 
 // ---------------------------------------------------------------------------------------------------------------- GEMM
-template <int GW>
-__global__ __launch_bounds__(WAVES_N * 32) void k_gemm(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ WS,
+template <int GW, int WN>
+__global__ __launch_bounds__(WN * 32) void k_gemm(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ WS,
         const uint8_t * __restrict__ X4p, const uint8_t * __restrict__ XMp, const float * __restrict__ XRp, float * __restrict__ out, int M, int N, int K, const float * res) {
 #ifdef INT4W_DEVICE_OK
     const int lane = threadIdx.x & 31;
@@ -318,7 +321,7 @@ __global__ __launch_bounds__(WAVES_N * 32) void k_gemm(const uint8_t * __restric
     const int h = lane >> 4, lc = lane & 15;
     const int nsb = K / 256;
     const int ft0 = blockIdx.x * MI;
-    const int tt0 = (blockIdx.y * WAVES_N + wn) * NJ;
+    const int tt0 = (blockIdx.y * WN + wn) * NJ;
     const __amdgpu_buffer_rsrc_t rWp = INT4W_RSRC(Wp), rWh = INT4W_RSRC(Wh), rX4 = INT4W_RSRC(X4p), rXM = INT4W_RSRC(XMp);
 
     int itot[MI][NJ][8];
@@ -490,7 +493,8 @@ __global__ __launch_bounds__(256) void k_rot_pack8(const float * __restrict__ X,
 }
 
 // one scale group (32 K-values) per unit: hi-plane WMMAs, x16, lo-plane WMMAs on the same accumulator, then the integer weight scale
-__global__ __launch_bounds__(WAVES_N * 32) void k_gemm8(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ WS,
+template <int WN>
+__global__ __launch_bounds__(WN * 32) void k_gemm8(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ WS,
         const uint8_t * __restrict__ Xhp, const uint8_t * __restrict__ Xlp, const uint8_t * __restrict__ XMp, const float * __restrict__ XRp, float * __restrict__ out, int M, int N, int K, const float * res) {
 #ifdef INT4W_DEVICE_OK
     const int lane = threadIdx.x & 31;
@@ -498,7 +502,7 @@ __global__ __launch_bounds__(WAVES_N * 32) void k_gemm8(const uint8_t * __restri
     const int h = lane >> 4, lc = lane & 15;
     const int nsb = K / 256;
     const int ft0 = blockIdx.x * MI;
-    const int tt0 = (blockIdx.y * WAVES_N + wn) * NJ;
+    const int tt0 = (blockIdx.y * WN + wn) * NJ;
     const __amdgpu_buffer_rsrc_t rWp = INT4W_RSRC(Wp), rWh = INT4W_RSRC(Wh), rXh = INT4W_RSRC(Xhp), rXl = INT4W_RSRC(Xlp), rXM = INT4W_RSRC(XMp);
 
     float tot[MI][NJ][8];
@@ -613,8 +617,8 @@ __global__ __launch_bounds__(WAVES_N * 32) void k_gemm8(const uint8_t * __restri
 
 // as k_gemm8 for weights whose scale is shared by GW (2 or 4) consecutive 32-groups: the hi pass and the lo pass each chain GW groups
 // on one accumulator, so the integer scale is applied once per GW groups
-template <int GW>
-__global__ __launch_bounds__(WAVES_N * 32) void k_gemm8w(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ WS,
+template <int GW, int WN>
+__global__ __launch_bounds__(WN * 32) void k_gemm8w(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ WS,
         const uint8_t * __restrict__ Xhp, const uint8_t * __restrict__ Xlp, const uint8_t * __restrict__ XMp, const float * __restrict__ XRp, float * __restrict__ out, int M, int N, int K, const float * res) {
 #ifdef INT4W_DEVICE_OK
     const int lane = threadIdx.x & 31;
@@ -622,7 +626,7 @@ __global__ __launch_bounds__(WAVES_N * 32) void k_gemm8w(const uint8_t * __restr
     const int h = lane >> 4, lc = lane & 15;
     const int nsb = K / 256;
     const int ft0 = blockIdx.x * MI;
-    const int tt0 = (blockIdx.y * WAVES_N + wn) * NJ;
+    const int tt0 = (blockIdx.y * WN + wn) * NJ;
     const __amdgpu_buffer_rsrc_t rWp = INT4W_RSRC(Wp), rWh = INT4W_RSRC(Wh), rXh = INT4W_RSRC(Xhp), rXl = INT4W_RSRC(Xlp), rXM = INT4W_RSRC(XMp);
 
     float tot[MI][NJ][8];
@@ -1129,22 +1133,30 @@ bool ggml_cuda_int4_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor *
         CUDA_CHECK(cudaMemsetAsync(xr_ptr, 0, xr_bytes, stream));
     }
     const size_t smem = (size_t) K * 2 + (size_t) nsb * 4;
-    const dim3 grid(M / TILE_M, Npad / TILE_N);
+    const bool wn4 = (int64_t) M * K >= int4_wn4_min();
     if (a8) {
         if (!packed) k_rot_pack8<<<N, 256, smem, stream>>>(glu_x ? glu_x : (const float *) src1->data, K, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, glu_y);
-        switch (w.gw) {
-            case 2:  k_gemm8w<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
-            case 4:  k_gemm8w<4><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
-            default: k_gemm8<<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
-        }
     } else {
         if (!packed) k_rot_pack<<<N, 256, smem, stream>>>(glu_x ? glu_x : (const float *) src1->data, K, x4_ptr, xm_ptr, xr_ptr, int4_clip(), glu_y);
-        switch (w.gw) {
-            case 1:  k_gemm<1><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
-            case 2:  k_gemm<2><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
-            default: k_gemm<4><<<grid, WAVES_N * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
-        }
     }
+    const auto run = [&](auto wn_c) {
+        constexpr int WN = decltype(wn_c)::value;
+        const dim3 grid(M / TILE_M, Npad / (WN * NJ * 16));
+        if (a8) {
+            switch (w.gw) {
+                case 2:  k_gemm8w<2, WN><<<grid, WN * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
+                case 4:  k_gemm8w<4, WN><<<grid, WN * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
+                default: k_gemm8<WN><<<grid, WN * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, x4_ptr + plane, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
+            }
+        } else {
+            switch (w.gw) {
+                case 1:  k_gemm<1, WN><<<grid, WN * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
+                case 2:  k_gemm<2, WN><<<grid, WN * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
+                default: k_gemm<4, WN><<<grid, WN * 32, 0, stream>>>(w.Wp, w.Wh, w.S, x4_ptr, xm_ptr, xr_ptr, (float *) dst->data, M, N, K, res); break;
+            }
+        }
+    };
+    if (wn4) run(std::integral_constant<int, 4>{}); else run(std::integral_constant<int, WAVES_N>{});
     CUDA_CHECK(cudaGetLastError());
     return true;
 }
