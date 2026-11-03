@@ -18,6 +18,10 @@
 // The macro on the following line shifts it by a factor of 2**3=8, as was needed to fix https://github.com/ggml-org/llama.cpp/issues/18606 .
 #define FATTN_KQ_MAX_OFFSET (3.0f*0.6931f)
 
+// Arrival counters for the in-kernel combine of the split-KV decode path (one per (Q tile, head group)): the last block of a group to finish combines the partial results of
+// its group, which saves the launch of flash_attn_combine_results.  Zero-initialized; the last block of a group resets its counter, so no memset is needed per launch.
+static __device__ unsigned int ggml_fa_fold_ctr[4096];
+
 typedef void (* fattn_kernel_t)(
         const char * __restrict__ Q,
         const char * __restrict__ K,
@@ -39,7 +43,8 @@ typedef void (* fattn_kernel_t)(
                             const int32_t nb11, const int32_t nb12, const int64_t nb13,
                             const int32_t nb21, const int32_t nb22, const int64_t nb23,
                             const int32_t ne31, const int32_t ne32, const int32_t ne33,
-                            const int32_t nb31, const int32_t nb32, const int64_t nb33);
+                            const int32_t nb31, const int32_t nb32, const int64_t nb33,
+                            float * dst_final);
 
 typedef float (*vec_dot_KQ_t)(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8 , const void * __restrict__ Q_ds);
@@ -972,7 +977,7 @@ static __global__ void flash_attn_combine_results(
 template <int DV, int ncols1, int ncols2>
 void launch_fattn(
     ggml_backend_cuda_context & ctx, ggml_tensor * dst, fattn_kernel_t fattn_kernel, const int nwarps, const size_t nbytes_shared,
-    const int nbatch_fa, const bool need_f16_K, const bool need_f16_V, const bool stream_k, const int warp_size = WARP_SIZE
+    const int nbatch_fa, const bool need_f16_K, const bool need_f16_V, const bool stream_k, const int warp_size = WARP_SIZE, const bool fold_ok = false
 ) {
     constexpr int ncols = ncols1 * ncols2;
 
@@ -1184,6 +1189,15 @@ void launch_fattn(
         }
     }
 
+    // single query token (ncols1 == 1): the kernel's last block per group combines the partial results itself
+    bool fold = false;
+#ifdef GGML_USE_HIP   // the cache coherence this relies on (acquire fence, then ordinary loads) is only verified on AMD
+    if (!stream_k && fold_ok && ncols1 == 1 && DV % 128 == 0 && parallel_blocks > 1 && parallel_blocks <= 32 && blocks_num.x*blocks_num.z <= 4096) {
+        static const bool fold_en = getenv("GGML_FA_FOLD") ? atoi(getenv("GGML_FA_FOLD")) != 0 : true;
+        fold = fold_en;
+    }
+#endif // GGML_USE_HIP
+
     float scale         = 1.0f;
     float max_bias      = 0.0f;
     float logit_softcap = 0.0f;
@@ -1221,7 +1235,8 @@ void launch_fattn(
         K->ne[0], K->ne[1], K->ne[2], K->ne[3], nb11, nb12, nb13,
         nb21, nb22, nb23,
         mask ? mask->ne[1] : 0, mask ? mask->ne[2] : 0, mask ? mask->ne[3] : 0,
-        mask ? mask->nb[1] : 0, mask ? mask->nb[2] : 0, mask ? mask->nb[3] : 0
+        mask ? mask->nb[1] : 0, mask ? mask->nb[2] : 0, mask ? mask->nb[3] : 0,
+        fold ? (float *) KQV->data : nullptr
     );
     CUDA_CHECK(cudaGetLastError());
 
@@ -1261,7 +1276,7 @@ void launch_fattn(
                  Q->ne[1], Q->ne[2], gqa_ratio, total_work,
                  fd_k_j_z_ne12, fd_k_j_z, fd_k_j, fd_k);
         }
-    } else if (parallel_blocks > 1) {
+    } else if (parallel_blocks > 1 && !fold) {
         const dim3 block_dim_combine(DV, 1, 1);
         const dim3 blocks_num_combine(Q->ne[1], Q->ne[2], Q->ne[3]);
         const size_t nbytes_shared_combine = parallel_blocks*sizeof(float2);
