@@ -43,7 +43,7 @@ examples/rdna3-int4/serve.sh
 
 The launcher selects fast prefill, four-row 27B matvecs, the IQ4_XS head and batched input uploads. Set `GGML_INT4_PREFILL=quality` for the quality prefill preset. The reference machine uses 12 threads, batch 2048, microbatch 512, F16 KV and Flash Attention. For throughput summaries, discard each process's first cold repetition; exact commands and samples are retained in `results/`.
 
-The server uses the model alias `qwen3.8-27b-int4`, context 65536, one slot, F16 K/V, and `--ctx-checkpoints 0`. Disabling recurrent-state checkpoints avoids slow small-batch prompt tails and preserves the measured 2k prefill. Edited prompts may need more recomputation. `--spec-type none` disables speculation. The full local deployment and validation artifacts are in [deployment](deployment/README.md).
+The server uses the model alias `qwen3.8-27b-int4`, context 65536, one slot, F16 K/V, and `--ctx-checkpoints 0`. Disabling recurrent-state checkpoints avoids slow small-batch prompt tails and preserves the measured 2k prefill. Edited prompts may need more recomputation. `--spec-type none` disables speculation.
 
 ## Quantization workflow
 
