@@ -1,0 +1,19 @@
+{
+  "label": "rows_control",
+  "returncode": 0,
+  "elapsed": 14.33495683700312,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 43.43699326197929,
+      "samples_ts": [
+        43.2838,
+        43.4576,
+        43.437,
+        43.436
+      ],
+      "latency_ms": 2946.796967
+    }
+  ]
+}

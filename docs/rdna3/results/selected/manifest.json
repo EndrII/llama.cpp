@@ -1,0 +1,28 @@
+{
+  "target_met": false,
+  "model": "/mnt/data/work27b/qwen38-27b-rotq4-gptq.gguf",
+  "head_cache": "/home/svt/tuning27b-next/head_iq4_xs.bin",
+  "head_cache_sha256": "65ea8897fb9dd7c46de9a4246a3be034547f018cdaa21e155387ced727493998",
+  "head_source": {
+    "tensor": "output.weight",
+    "source_type": "Q6_K",
+    "destination_type": "IQ4_XS",
+    "K": 5120,
+    "M": 248320,
+    "source_offset": 14795624320
+  },
+  "flags": {
+    "GGML_INT4_HEAD_REQUANT": "iq4_xs",
+    "GGML_INT4_HEAD_FILE": "/home/svt/tuning27b-next/head_iq4_xs.bin",
+    "GGML_CUDA_BATCH_INPUTS": "1"
+  },
+  "original_checkpoint": "/home/svt/tuning27b50",
+  "notes": "No MTP/speculative decoding. Original GGUF unchanged. Experimental source branches excluded.",
+  "source": "source",
+  "artifacts": {
+    "bin/libggml-hip.so.0.18.0": "aaf4e17f32d772e251a92662fc0eb3966097d55b3619c0275a5194ce5b55a150",
+    "bin/libggml-base.so.0.18.0": "ee55d5776f51e8c764e0a35039cf5a201e12a10be1608fcab566498455378f15",
+    "bin/libllama.so.0.0.0": "d4734c3ce53a103067053bee7ed678a741184f60ea753521703080b58de37728",
+    "changes-vs-4785.patch": "0d2437be3e456a64450d1f87bfc0a3525eee51ed06e7bf12af69c735a01c7b02"
+  }
+}

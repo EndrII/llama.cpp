@@ -1,0 +1,13 @@
+{
+  "label": "decode_accuracy_b1_final",
+  "returncode": 0,
+  "elapsed": 25.95150810503401,
+  "peak_vram_bytes": 16086401024,
+  "metrics": [
+    "Mean PPL(Q)                   :   5.746768 \u00b1   0.668743",
+    "Mean PPL(Q)/PPL(base)         :   1.001529 \u00b1   0.001366",
+    "Mean PPL(Q)-PPL(base)         :   0.008774 \u00b1   0.008100",
+    "Mean    KLD:   0.000215 \u00b1   0.000024",
+    "Same top p: 100.000 \u00b1 0.000 %"
+  ]
+}

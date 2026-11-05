@@ -1,0 +1,20 @@
+{
+  "label": "row_nw_control",
+  "returncode": 0,
+  "elapsed": 13.682221168011893,
+  "peak_vram_bytes": 16336826368,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 46.30784054549062,
+      "samples_ts": [
+        46.1104,
+        46.3078,
+        46.3098,
+        46.2961
+      ],
+      "latency_ms": 2764.110753
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+[
+  {
+    "label": "runtime_control",
+    "env": {},
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "runtime_graphopt",
+    "env": {
+      "GGML_CUDA_GRAPH_OPT": "1"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "runtime_sdmaoff",
+    "env": {
+      "HSA_ENABLE_SDMA": "0"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "runtime_direct0",
+    "env": {
+      "AMD_DIRECT_DISPATCH": "0"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "runtime_direct1",
+    "env": {
+      "AMD_DIRECT_DISPATCH": "1"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "runtime_kernarg",
+    "env": {
+      "HIP_FORCE_DEV_KERNARG": "1"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "runtime_hwqueue1",
+    "env": {
+      "GPU_MAX_HW_QUEUES": "1"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  }
+]

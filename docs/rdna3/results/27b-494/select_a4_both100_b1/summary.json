@@ -1,0 +1,13 @@
+{
+  "label": "select_a4_both100_b1",
+  "returncode": 0,
+  "elapsed": 23.549547040020116,
+  "peak_vram_bytes": 15681953792,
+  "metrics": [
+    "Mean PPL(Q)                   :   5.829922 \u00b1   0.678843",
+    "Mean PPL(Q)/PPL(base)         :   1.016021 \u00b1   0.008404",
+    "Mean PPL(Q)-PPL(base)         :   0.091928 \u00b1   0.049459",
+    "Mean    KLD:   0.019496 \u00b1   0.001994",
+    "Same top p: 94.118 \u00b1 1.043 %"
+  ]
+}

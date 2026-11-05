@@ -1,0 +1,19 @@
+{
+  "label": "prefetch_v6",
+  "returncode": 0,
+  "elapsed": 10.62970084301196,
+  "peak_vram_bytes": 15800012800,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.33172571568056,
+      "samples_ts": [
+        49.0885,
+        49.328,
+        49.3354
+      ],
+      "latency_ms": 2594.679147
+    }
+  ]
+}

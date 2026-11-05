@@ -1,0 +1,20 @@
+{
+  "label": "scale8_batch1024",
+  "returncode": 0,
+  "elapsed": 13.73012349603232,
+  "peak_vram_bytes": 16225542144,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 46.066832335880065,
+      "samples_ts": [
+        45.9019,
+        46.027,
+        46.0858,
+        46.0668
+      ],
+      "latency_ms": 2778.571773
+    }
+  ]
+}

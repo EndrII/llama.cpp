@@ -1,0 +1,132 @@
+[
+  {
+    "label": "rows_control",
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "rows_gdn2",
+    "env": {
+      "GGML_MV_GDN_ROWS": "2"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "rows_ffn2",
+    "env": {
+      "GGML_MV_FFN_ROWS": "2"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "rows_both2",
+    "env": {
+      "GGML_MV_GDN_ROWS": "2",
+      "GGML_MV_FFN_ROWS": "2"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "rows_all2",
+    "env": {
+      "GGML_MV_GDN_ROWS": "2",
+      "GGML_MV_FFN_ROWS": "2",
+      "GGML_MV_ATTN_ROWS": "2"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "rows_gdn4",
+    "env": {
+      "GGML_MV_GDN_ROWS": "4"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "rows_ffn4",
+    "env": {
+      "GGML_MV_FFN_ROWS": "4"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "rows_all4",
+    "env": {
+      "GGML_MV_GDN_ROWS": "4",
+      "GGML_MV_FFN_ROWS": "4",
+      "GGML_MV_ATTN_ROWS": "4"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  }
+]

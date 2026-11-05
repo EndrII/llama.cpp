@@ -1,0 +1,20 @@
+{
+  "label": "select_a4_both_85",
+  "returncode": 0,
+  "elapsed": 13.033873326028697,
+  "peak_vram_bytes": 15701360640,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.70776808965223,
+      "samples_ts": [
+        49.3983,
+        49.7037,
+        49.7078,
+        49.7092
+      ],
+      "latency_ms": 2575.050237
+    }
+  ]
+}

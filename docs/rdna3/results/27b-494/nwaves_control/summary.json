@@ -1,0 +1,19 @@
+{
+  "label": "nwaves_control",
+  "returncode": 0,
+  "elapsed": 10.629755954025313,
+  "peak_vram_bytes": 15825190912,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.27260546300774,
+      "samples_ts": [
+        49.0272,
+        49.2746,
+        49.2706
+      ],
+      "latency_ms": 2597.7924
+    }
+  ]
+}

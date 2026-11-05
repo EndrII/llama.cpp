@@ -1,0 +1,20 @@
+{
+  "label": "heads_algebra_iq4nl",
+  "returncode": 0,
+  "elapsed": 13.232525532948785,
+  "peak_vram_bytes": 15665598464,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.2847435503581,
+      "samples_ts": [
+        49.0499,
+        49.2929,
+        49.2842,
+        49.2847
+      ],
+      "latency_ms": 2597.152603
+    }
+  ]
+}

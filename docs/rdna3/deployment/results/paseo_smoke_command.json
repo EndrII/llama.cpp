@@ -1,0 +1,18 @@
+{
+  "command": [
+    "/home/svt/.local/bin/paseo",
+    "run",
+    "--provider",
+    "omp",
+    "--cwd",
+    "/home/svt",
+    "--title",
+    "INT4 connection check",
+    "--wait-timeout",
+    "120s",
+    "--json",
+    "Reply with exactly PASEO_INT4_OK. Do not use tools or web services."
+  ],
+  "returncode": 0,
+  "elapsed_s": 6.229461695009377
+}

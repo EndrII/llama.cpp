@@ -1,0 +1,98 @@
+[
+  {
+    "label": "prepack_0",
+    "env": {
+      "GGML_MV_PREPACK": "0"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "prepack_1",
+    "env": {
+      "GGML_MV_PREPACK": "1"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "prepack_2",
+    "env": {
+      "GGML_MV_PREPACK": "2"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "prepack_3",
+    "env": {
+      "GGML_MV_PREPACK": "3"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "prepack_4",
+    "env": {
+      "GGML_MV_PREPACK": "4"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "prepack_7",
+    "env": {
+      "GGML_MV_PREPACK": "7"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  }
+]

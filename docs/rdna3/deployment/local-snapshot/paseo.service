@@ -1,0 +1,22 @@
+[Unit]
+Description=Paseo web frontend for OMP
+After=network-online.target qwen38-server.service
+Wants=network-online.target qwen38-server.service
+
+[Service]
+Type=simple
+Environment=HOME=/home/svt
+Environment=PATH=/home/svt/.local/bin:/home/svt/.local/share/node/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PASEO_HOME=/home/svt/.paseo
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+WorkingDirectory=/home/svt
+ExecStart=/home/svt/.local/bin/paseo start --foreground --listen 127.0.0.1:6767 --no-relay --no-mcp --no-inject-mcp --web-ui --hostnames obsidian.tail907083.ts.net
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

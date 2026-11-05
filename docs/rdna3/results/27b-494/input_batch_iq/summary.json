@@ -1,0 +1,20 @@
+{
+  "label": "input_batch_iq",
+  "returncode": 0,
+  "elapsed": 13.232590953004546,
+  "peak_vram_bytes": 15801999360,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.16029596118922,
+      "samples_ts": [
+        48.9013,
+        49.1609,
+        49.1603,
+        49.1588
+      ],
+      "latency_ms": 2603.727205
+    }
+  ]
+}

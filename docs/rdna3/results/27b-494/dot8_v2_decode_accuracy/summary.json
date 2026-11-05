@@ -1,0 +1,13 @@
+{
+  "label": "dot8_v2_decode_accuracy",
+  "returncode": 0,
+  "elapsed": 23.84870003099786,
+  "peak_vram_bytes": 15648366592,
+  "metrics": [
+    "Mean PPL(Q)                   :   5.732151 \u00b1   0.664726",
+    "Mean PPL(Q)/PPL(base)         :   0.998982 \u00b1   0.006081",
+    "Mean PPL(Q)-PPL(base)         :  -0.005843 \u00b1   0.034929",
+    "Mean    KLD:   0.009273 \u00b1   0.000613",
+    "Same top p: 95.490 \u00b1 0.920 %"
+  ]
+}

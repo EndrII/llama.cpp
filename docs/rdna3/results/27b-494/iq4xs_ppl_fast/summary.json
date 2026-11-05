@@ -1,0 +1,13 @@
+{
+  "label": "iq4xs_ppl_fast",
+  "returncode": 0,
+  "elapsed": 10.835919823963195,
+  "peak_vram_bytes": 16174305280,
+  "metrics": [
+    "Mean PPL(Q)                   :   6.125678 \u00b1   0.188083",
+    "Mean PPL(Q)/PPL(base)         :   1.041026 \u00b1   0.005329",
+    "Mean PPL(Q)-PPL(base)         :   0.241411 \u00b1   0.031993",
+    "Mean    KLD:   0.060487 \u00b1   0.001837",
+    "Same top p: 89.101 \u00b1 0.398 %"
+  ]
+}

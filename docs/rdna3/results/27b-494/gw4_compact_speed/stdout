@@ -1,0 +1,23 @@
+[
+[New LWP 4142416]
+[New LWP 4142415]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+0x00007b76eb910913 in __GI___wait4 (pid=4142422, stat_loc=0x0, options=0, usage=0x0) at ../sysdeps/unix/sysv/linux/wait4.c:30
+#0  0x00007b76eb910913 in __GI___wait4 (pid=4142422, stat_loc=0x0, options=0, usage=0x0) at ../sysdeps/unix/sysv/linux/wait4.c:30
+30	in ../sysdeps/unix/sysv/linux/wait4.c
+#1  0x00007b76ebf31723 in ggml_print_backtrace () from /home/svt/tuning27b-next/bin/libggml-base.so.0
+#2  0x00007b76ebf318cb in ggml_abort () from /home/svt/tuning27b-next/bin/libggml-base.so.0
+#3  0x00007b76ea10454b in (anonymous namespace)::get_weights(ihipStream_t*, ggml_tensor const*) () from /home/svt/tuning27b-next/bin/libggml-hip.so.0
+#4  0x00007b76ea1063ea in ggml_cuda_int4_prepare(ggml_backend_cuda_context&, ggml_cgraph const*) () from /home/svt/tuning27b-next/bin/libggml-hip.so.0
+#5  0x00007b76ea0e77ee in ggml_backend_cuda_graph_compute(ggml_backend*, ggml_cgraph*) () from /home/svt/tuning27b-next/bin/libggml-hip.so.0
+#6  0x00007b76ebf50011 in ggml_backend_sched_compute_splits(ggml_backend_sched*) () from /home/svt/tuning27b-next/bin/libggml-base.so.0
+#7  0x00007b76eaef1831 in llama_context::graph_compute(ggml_cgraph*, bool) () from /home/svt/tuning27b-next/bin/libllama.so.0
+#8  0x00007b76eaef59ba in llama_context::process_ubatch(llama_ubatch const&, llm_graph_type, llama_memory_context_i*, ggml_status&) () from /home/svt/tuning27b-next/bin/libllama.so.0
+#9  0x00007b76eaefc738 in llama_context::decode(llama_batch const&) () from /home/svt/tuning27b-next/bin/libllama.so.0
+#10 0x00007b76eaefe3bf in llama_decode () from /home/svt/tuning27b-next/bin/libllama.so.0
+#11 0x00007b76ec06971e in llama_bench(int, char**) () from /home/svt/tuning27b-next/bin/libllama-bench-impl.so
+#12 0x00007b76eb82a1ca in __libc_start_call_main (main=main@entry=0x6054ca7ea270 <main>, argc=argc@entry=15, argv=argv@entry=0x7fffab3e1518) at ../sysdeps/nptl/libc_start_call_main.h:58
+#13 0x00007b76eb82a28b in __libc_start_main_impl (main=0x6054ca7ea270 <main>, argc=15, argv=0x7fffab3e1518, init=<optimized out>, fini=<optimized out>, rtld_fini=<optimized out>, stack_end=0x7fffab3e1508) at ../csu/libc-start.c:360
+#14 0x00006054ca7ea2a5 in _start ()
+[Inferior 1 (process 4142414) detached]

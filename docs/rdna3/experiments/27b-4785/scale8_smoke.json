@@ -1,0 +1,1 @@
+[{"label": "scale8_speed", "env": {}, "args": ["-p", "512", "-n", "128", "-r", "4", "-o", "json"]}, {"label": "scale8_accuracy2", "tool": "llama-perplexity", "args": ["-f", "/mnt/data/projects/ossicle-gguf/work/wiki.test.raw", "-c", "512", "-b", "512", "--chunks", "2", "--kl-divergence", "--kl-divergence-base", "/mnt/9100pro/ossicle-work/kld_base_qwen38_27b.bin"]}]

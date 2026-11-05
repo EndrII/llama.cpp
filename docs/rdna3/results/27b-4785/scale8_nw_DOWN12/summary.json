@@ -1,0 +1,19 @@
+{
+  "label": "scale8_nw_DOWN12",
+  "returncode": 0,
+  "elapsed": 11.180119179014582,
+  "peak_vram_bytes": 16150167552,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 44.94148077447657,
+      "samples_ts": [
+        44.7467,
+        44.944,
+        44.9389
+      ],
+      "latency_ms": 2848.148254
+    }
+  ]
+}

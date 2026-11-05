@@ -1,0 +1,18 @@
+{
+  "label": "aql_audit_nograph",
+  "returncode": 0,
+  "elapsed": 4.020309031999204,
+  "peak_vram_bytes": 15915356160,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 32,
+      "median_ts": 45.26138279541375,
+      "samples_ts": [
+        45.3453,
+        45.2614
+      ],
+      "latency_ms": 707.004471
+    }
+  ]
+}

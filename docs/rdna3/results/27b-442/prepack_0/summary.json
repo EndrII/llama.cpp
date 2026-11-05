@@ -1,0 +1,19 @@
+{
+  "label": "prepack_0",
+  "returncode": 0,
+  "elapsed": 14.33386276703095,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 43.338500916865264,
+      "samples_ts": [
+        43.1712,
+        43.3385,
+        43.3432,
+        43.3343
+      ],
+      "latency_ms": 2953.493944
+    }
+  ]
+}

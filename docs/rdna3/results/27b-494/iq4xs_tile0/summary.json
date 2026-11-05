@@ -1,0 +1,19 @@
+{
+  "label": "iq4xs_tile0",
+  "returncode": 0,
+  "elapsed": 10.53029081603745,
+  "peak_vram_bytes": 15801974784,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.41224226612072,
+      "samples_ts": [
+        49.1007,
+        49.4164,
+        49.4081
+      ],
+      "latency_ms": 2590.451154
+    }
+  ]
+}

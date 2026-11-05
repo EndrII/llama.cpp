@@ -1,5 +1,17 @@
 # llama.cpp
 
+## Ossicle: rotated INT4 on RX 7900 XT
+
+| Model | Prefill pp512 (tokens/s) | Decode (tokens/s) |
+|---|---:|---:|
+| Qwen3.5-4B | 11,012 | 200.6 |
+| Qwen3.5-9B | 6,581 | 125.8 |
+| Qwen3.8-27B | 2,013 | **50.1** |
+
+Single RX 7900 XT; fast prefill; no MTP or speculative decoding. The 27B decode figure is peak throughput. The 4B and 9B figures are cited in the [paper](docs/rdna3/papers/qwen35_int4_summary.pdf); the [results and comparison table](docs/rdna3/README.md) include the RTX 5080's reported 50 tokens/s for 27B IQ4_XS.
+
+[Build and run](docs/rdna3/REPRODUCE.md) | [Profiling](docs/rdna3/PROFILING.md) | [Papers and work archive](docs/rdna3/README.md) | [OMP/Paseo deployment](docs/rdna3/deployment/README.md)
+
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
 <div align="center">

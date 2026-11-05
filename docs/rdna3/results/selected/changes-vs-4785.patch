@@ -1,0 +1,255 @@
+--- a/ggml/src/ggml-cuda/int4-wmma.cu
++++ b/ggml/src/ggml-cuda/int4-wmma.cu
+@@ -19,6 +19,7 @@
+ #if defined(GGML_USE_HIP)
+ 
+ #include <cstdlib>
++#include <algorithm>
+ #include <cstring>
+ #include <mutex>
+ #include <string>
+@@ -989,6 +990,107 @@
+ int int4_min_n() {
+     static const int n = [] { const char * e = getenv("GGML_INT4_MIN_N"); return e ? atoi(e) : 64; }();
+     return n;
++}
++
++// Optional experiment: keep the GGUF unchanged and requantize only its Q6_K
++// vocabulary projection in the existing device allocation before graph capture.
++__device__ __constant__ static const int head_iq4_values[16] = {-127,-104,-83,-65,-49,-35,-22,-10,1,13,25,38,53,69,89,113};
++__device__ __forceinline__ int head_nearest(float x) {
++    int lo=0, hi=15;
++#pragma unroll
++    for(int i=0;i<4;i++){const int m=(lo+hi)/2;if((float)head_iq4_values[m]<x)lo=m+1;else hi=m;}
++    if(lo>0&&fabsf(x-head_iq4_values[lo-1])<fabsf(x-head_iq4_values[lo]))--lo;
++    return lo;
++}
++template <bool NL>
++__global__ __launch_bounds__(32) void k_head_requant(const block_q6_K * __restrict__ src, uint8_t * __restrict__ dst) {
++    const int lane=threadIdx.x, group=blockIdx.x&7;
++    const block_q6_K & b=src[blockIdx.x/8];
++    const int e=group*32+lane, ip=e/128, il=e&31, part=(e&127)/32;
++    const int ql=b.ql[64*ip+il+(part&1)*32], qh=b.qh[32*ip+il];
++    const int q=(((part<2?ql&15:ql>>4)|(((qh>>(2*part))&3)<<4))-32);
++    const float x=__half2float(b.d)*(float)b.scales[8*ip+il/16+2*part]*(float)q;
++    const float am=wave32_max(fabsf(x));
++    const unsigned mask=(unsigned)__ballot(fabsf(x)==am);
++    const float mx=__shfl(x,__ffs(mask)-1,32);
++    float d=0.f;
++    int code=0;
++    if(NL){
++        d=mx/127.f;
++        float id=d!=0.f?1.f/d:0.f;
++        const float weight=x*x;
++        int l=head_nearest(id*x);
++        float level=(float)head_iq4_values[l];
++        float sx=wave32_sum(weight*level*x), sq=wave32_sum(weight*level*level);
++        d=sq>0.f?sx/sq:0.f;
++        float best=d*sx;
++        for(int t=-7;t<=7;t++){
++            id=mx!=0.f?(float)(t-127)/mx:0.f;
++            l=head_nearest(id*x);level=(float)head_iq4_values[l];
++            sx=wave32_sum(weight*level*x);sq=wave32_sum(weight*level*level);
++            if(sq>0.f&&sx*sx>best*sq){d=sx/sq;best=d*sx;}
++        }
++        code=head_nearest(d!=0.f?x/d:0.f);
++    }else{
++        d=-mx/8.f;
++        code=min(15,max(0,(int)(d!=0.f?x/d+8.5f:8.f)));
++    }
++    const int other=__shfl(code,lane+16,32);
++    uint8_t * out=dst+(size_t)blockIdx.x*18;
++    if(lane==0)*(__half*)out=__float2half(d);
++    if(lane<16)out[2+lane]=(uint8_t)(code|(other<<4));
++}
++static void maybe_requant_head(cudaStream_t stream, const ggml_tensor * tensor) {
++    const char * option=getenv("GGML_INT4_HEAD_REQUANT");
++    if(!option||tensor->type!=GGML_TYPE_Q6_K||tensor->ne[0]!=5120||tensor->ne[1]!=248320||tensor->ne[2]!=1||tensor->ne[3]!=1||strcmp(tensor->name,"output.weight"))return;
++    ggml_type external_type = GGML_TYPE_COUNT;
++    if (!strcmp(option,"iq4_xs")) external_type=GGML_TYPE_IQ4_XS;
++    if (external_type != GGML_TYPE_COUNT) {
++        const char * path=getenv("GGML_INT4_HEAD_FILE");
++        GGML_ASSERT(path);
++        hipStreamCaptureStatus status=hipStreamCaptureStatusNone;
++        CUDA_CHECK(hipStreamIsCapturing(stream,&status));GGML_ASSERT(status==hipStreamCaptureStatusNone);
++        FILE * f=fopen(path,"rb");GGML_ASSERT(f);
++        const size_t row_bytes=ggml_row_size(external_type,tensor->ne[0]);
++        const size_t size=row_bytes*tensor->ne[1];
++        GGML_ASSERT(fseeko(f,0,SEEK_END)==0);GGML_ASSERT((size_t)ftello(f)==size);rewind(f);
++        GGML_ASSERT(size<=ggml_nbytes(tensor));
++        std::vector<uint8_t> chunk(16*1024*1024);
++        for(size_t pos=0;pos<size;pos+=chunk.size()){
++            const size_t n=std::min(chunk.size(),size-pos);GGML_ASSERT(fread(chunk.data(),1,n,f)==n);
++            CUDA_CHECK(cudaMemcpyAsync((uint8_t*)tensor->data+pos,chunk.data(),n,cudaMemcpyHostToDevice,stream));
++            CUDA_CHECK(cudaStreamSynchronize(stream));
++        }
++        fclose(f);
++        ggml_tensor * t=const_cast<ggml_tensor*>(tensor);
++        t->type=external_type;t->nb[0]=ggml_type_size(external_type);t->nb[1]=row_bytes;
++        for(int i=2;i<4;i++)t->nb[i]=t->nb[i-1]*t->ne[i-1];
++        GGML_LOG_INFO("int4: experimental output.weight Q6_K -> %s from %s in place; GGUF unchanged\n",option,path);
++        return;
++    }
++    const bool nonlinear=strcmp(option,"iq4_nl")==0;
++    if(!nonlinear&&strcmp(option,"q4_0"))return;
++    hipStreamCaptureStatus status=hipStreamCaptureStatusNone;
++    CUDA_CHECK(hipStreamIsCapturing(stream,&status));GGML_ASSERT(status==hipStreamCaptureStatusNone);
++    constexpr size_t CHUNK=65536;
++    const size_t nb=(size_t)ggml_nelements(tensor)/256;
++    block_q6_K * temp;
++    CUDA_CHECK(cudaMalloc((void**)&temp,CHUNK*sizeof(block_q6_K)));
++    uint8_t * bytes=(uint8_t*)tensor->data;
++    for(size_t offset=0;offset<nb;offset+=CHUNK){
++        const size_t count=std::min(CHUNK,nb-offset);
++        CUDA_CHECK(cudaMemcpyAsync(temp,bytes+offset*sizeof(block_q6_K),count*sizeof(block_q6_K),cudaMemcpyDeviceToDevice,stream));
++        if(nonlinear)k_head_requant<true><<<dim3((unsigned)(count*8)),32,0,stream>>>(temp,bytes+offset*8*18);
++        else k_head_requant<false><<<dim3((unsigned)(count*8)),32,0,stream>>>(temp,bytes+offset*8*18);
++        CUDA_CHECK(cudaGetLastError());
++    }
++    CUDA_CHECK(cudaStreamSynchronize(stream));CUDA_CHECK(cudaFree(temp));
++    ggml_tensor * mutable_tensor=const_cast<ggml_tensor*>(tensor);
++    mutable_tensor->type=nonlinear?GGML_TYPE_IQ4_NL:GGML_TYPE_Q4_0;
++    mutable_tensor->nb[0]=ggml_type_size(mutable_tensor->type);
++    mutable_tensor->nb[1]=mutable_tensor->nb[0]*(size_t)mutable_tensor->ne[0]/32;
++    for(int i=2;i<4;i++)mutable_tensor->nb[i]=mutable_tensor->nb[i-1]*mutable_tensor->ne[i-1];
++    GGML_LOG_INFO("int4: experimental output.weight Q6_K -> %s in place; GGUF unchanged\n",option);
+ }
+ 
+ struct Int4Weights { uint8_t * Wp = nullptr; uint8_t * Wh = nullptr; float * S = nullptr; int gw = 1; bool inplace = false; int sh = SH; };
+@@ -1264,6 +1366,7 @@
+         const ggml_tensor * n = cgraph->nodes[i];
+         if (n->op != GGML_OP_MUL_MAT) continue;
+         const ggml_tensor * w = n->src[0];
++        maybe_requant_head(ctx.stream(), w);
+         if (!ggml_cuda_int4_rotated(w) || !inplace_eligible(w)) continue;
+         get_weights(ctx.stream(), w);          // converts on first sight
+     }
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -785,15 +785,43 @@
+     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+ }
+ 
++struct ggml_cuda_input_copy { int device; std::vector<uint8_t> bytes; };
++static thread_local int ggml_cuda_input_batch_depth = 0;
++static thread_local std::vector<ggml_cuda_input_copy> ggml_cuda_input_copies;
++static void ggml_cuda_input_batch_flush() {
++    for (size_t i = 0; i < ggml_cuda_input_copies.size(); i++) {
++        bool seen = false;
++        for (size_t j = 0; j < i; j++) seen |= ggml_cuda_input_copies[j].device == ggml_cuda_input_copies[i].device;
++        if (!seen) {
++            ggml_cuda_set_device(ggml_cuda_input_copies[i].device);
++            CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
++        }
++    }
++    ggml_cuda_input_copies.clear();
++}
++static void ggml_backend_cuda_input_batch_begin() { ++ggml_cuda_input_batch_depth; }
++static void ggml_backend_cuda_input_batch_end() {
++    GGML_ASSERT(ggml_cuda_input_batch_depth > 0);
++    if (--ggml_cuda_input_batch_depth == 0) ggml_cuda_input_batch_flush();
++}
++
+ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
+ 
+     ggml_cuda_set_device(ctx->device);
+-    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+-    CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
++    const bool batched = ggml_cuda_input_batch_depth > 0 && size > 0 && size <= 65536;
++    const void * source = data;
++    if (batched) {
++        const auto * bytes = static_cast<const uint8_t *>(data);
++        ggml_cuda_input_copies.push_back({ctx->device, std::vector<uint8_t>(bytes, bytes + size)});
++        source = ggml_cuda_input_copies.back().bytes.data();
++    }
++    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, source, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
++    if (!batched) CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+ }
+ 
+ static void ggml_backend_cuda_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
++    ggml_cuda_input_batch_flush();
+     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
+ 
+     ggml_cuda_set_device(ctx->device);
+@@ -5935,6 +5963,8 @@
+ }
+ 
+ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
++    if (strcmp(name, "ggml_backend_cuda_input_batch_begin") == 0) return (void *)ggml_backend_cuda_input_batch_begin;
++    if (strcmp(name, "ggml_backend_cuda_input_batch_end") == 0) return (void *)ggml_backend_cuda_input_batch_end;
+     GGML_UNUSED(reg);
+     if (strcmp(name, "ggml_backend_comm_init") == 0) {
+         return (void *)ggml_backend_cuda_comm_init;
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include "ggml-backend.h"
+ #include "ggml-backend-impl.h"
++#include <cstdlib>
+ #include "ggml-alloc.h"
+ #include "ggml-impl.h"
+ 
+@@ -1547,6 +1548,36 @@
+     return true;
+ }
+ 
++// Opt-in backend extension: keep source storage alive while a decode input
++// transaction uploads its tensors, then synchronize once before graph compute.
++class ggml_input_batch_scope {
++    using hook = void (*)();
++    using hooks = std::vector<std::pair<hook, hook>>;
++    const hooks * active = nullptr;
++public:
++    explicit ggml_input_batch_scope(bool decode) {
++        static const bool requested = [] { const char * e = std::getenv("GGML_CUDA_BATCH_INPUTS"); return e && std::atoi(e); }();
++        if (!decode || !requested) return;
++        static const hooks available = [] {
++            hooks result;
++            for (size_t i = 0; i < ggml_backend_reg_count(); i++) {
++                const auto reg = ggml_backend_reg_get(i);
++                const auto begin = reinterpret_cast<hook>(ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_input_batch_begin"));
++                const auto end = reinterpret_cast<hook>(ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_input_batch_end"));
++                if (begin && end) result.emplace_back(begin, end);
++            }
++            return result;
++        }();
++        active = &available;
++        for (const auto & h : *active) h.first();
++    }
++    ~ggml_input_batch_scope() {
++        if (active) for (auto i = active->rbegin(); i != active->rend(); ++i) i->second();
++    }
++    ggml_input_batch_scope(const ggml_input_batch_scope &) = delete;
++    ggml_input_batch_scope & operator=(const ggml_input_batch_scope &) = delete;
++};
++
+ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
+     GGML_ASSERT(sched);
+     struct ggml_backend_sched_split * splits = sched->splits;
+@@ -1560,6 +1591,16 @@
+         int split_backend_id = split->backend_id;
+         ggml_backend_t split_backend = sched->backends[split_backend_id];
+ 
++        // Preserve user-input lifetimes and complete the upload transaction
++        // before launching the split. Restrict the extension to small host inputs.
++        {
++        bool batchable = split->n_inputs > 0;
++        for (int input_id = 0; input_id < split->n_inputs; input_id++) {
++            const ggml_tensor * t = split->inputs[input_id];
++            const auto buffer = t->view_src ? t->view_src->buffer : t->buffer;
++            batchable &= buffer && ggml_backend_buffer_is_host(buffer) && ggml_nbytes(t) <= 65536;
++        }
++        ggml_input_batch_scope upload_transaction(batchable);
+         // copy the input tensors to the split backend
+         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+             ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, split->inputs[input_id]);
+@@ -1682,6 +1723,7 @@
+                 }
+             }
+         }
++        }
+ 
+         if (!sched->callback_eval) {
+             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);

@@ -1,0 +1,19 @@
+{
+  "label": "scale4_cache0",
+  "returncode": 0,
+  "elapsed": 10.675986154004931,
+  "peak_vram_bytes": 15793569792,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 47.36509828776506,
+      "samples_ts": [
+        47.1393,
+        47.3686,
+        47.3616
+      ],
+      "latency_ms": 2702.411789
+    }
+  ]
+}

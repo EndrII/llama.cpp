@@ -1,0 +1,21 @@
+[Unit]
+Description=OMP native RPC web frontend
+After=network-online.target qwen38-server.service
+Wants=network-online.target qwen38-server.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/home/svt
+ExecStart=/usr/bin/python3 /home/svt/.local/share/omp-web/omp_web.py --host 127.0.0.1 --port 9120
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+KillMode=control-group
+Environment=HOME=/home/svt
+Environment=PATH=/home/svt/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

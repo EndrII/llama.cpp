@@ -1,0 +1,20 @@
+{
+  "label": "raw_f0_s2",
+  "returncode": 0,
+  "elapsed": 13.484317245020065,
+  "peak_vram_bytes": 15825027072,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 47.2369698594642,
+      "samples_ts": [
+        47.0091,
+        47.2539,
+        47.2341,
+        47.237
+      ],
+      "latency_ms": 2709.741975
+    }
+  ]
+}

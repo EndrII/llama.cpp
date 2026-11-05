@@ -1,0 +1,62 @@
+// Single-column INT4 x INT8 WMMA. Replicate the activation over logical rows,
+// then retain one result per feature from each wave's matrix output.
+template <bool GATE, int NW = 10>
+__global__ __launch_bounds__(32 * NW) void k_mv_wmma(
+        const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ S, float inv,
+        const uint8_t * __restrict__ Gp, const uint8_t * __restrict__ Gh, const float * __restrict__ Gs, float ginv,
+        const int8_t * __restrict__ Q, const float2 * __restrict__ D,
+        float * __restrict__ out, const float * __restrict__ xb, const float * __restrict__ gb, int glu, int K) {
+#ifdef INT4W_DEVICE_OK
+    const int lane=threadIdx.x, r=lane&15, h=lane>>4, wv=threadIdx.y;
+    const int ft=blockIdx.x, nsb=K/256, row=ft*16+r;
+    const float scale=S[row]*inv, gscale=GATE?Gs[row]*ginv:0.f;
+    float acc=0.f, gacc=0.f;
+    for(int sb=wv;sb<nsb;sb+=NW) {
+        const size_t so=((size_t)(ft*nsb+sb)*16+r)*4;
+        const uint32_t sc=*(const uint32_t*)(Wh+so), gc=GATE?*(const uint32_t*)(Gh+so):0;
+#pragma unroll 2
+        for(int g=0;g<8;g++) {
+            const size_t wo=((size_t)(ft*nsb+sb)*8+g)*256+r*16;
+            const uint4 w=nt128(Wp,wo);
+            const uint4 gw=GATE?nt128(Gp,wo):make_uint4(0,0,0,0);
+            const uint4 a=*(const uint4*)(Q+sb*256+g*32), b=*(const uint4*)(Q+sb*256+g*32+16);
+            const int2v xh0={(int)(((a.x>>4)&0x0F0F0F0Fu)|(a.y&0xF0F0F0F0u)),(int)(((a.z>>4)&0x0F0F0F0Fu)|(a.w&0xF0F0F0F0u))};
+            const int2v xh1={(int)(((b.x>>4)&0x0F0F0F0Fu)|(b.y&0xF0F0F0F0u)),(int)(((b.z>>4)&0x0F0F0F0Fu)|(b.w&0xF0F0F0F0u))};
+            const int2v xl0={(int)((a.x&0x0F0F0F0Fu)|((a.y&0x0F0F0F0Fu)<<4)),(int)((a.z&0x0F0F0F0Fu)|((a.w&0x0F0F0F0Fu)<<4))};
+            const int2v xl1={(int)((b.x&0x0F0F0F0Fu)|((b.y&0x0F0F0F0Fu)<<4)),(int)((b.z&0x0F0F0F0Fu)|((b.w&0x0F0F0F0Fu)<<4))};
+            const int2v w0={(int)w.x,(int)w.y},w1={(int)w.z,(int)w.w};
+            const int8v zero={0,0,0,0,0,0,0,0};
+            int8v ci=__builtin_amdgcn_wmma_i32_16x16x16_iu4_w32(true,xh0,true,w0,zero,false);
+            ci=__builtin_amdgcn_wmma_i32_16x16x16_iu4_w32(true,xh1,true,w1,ci,false);
+            ci=ci<<4;
+            ci=__builtin_amdgcn_wmma_i32_16x16x16_iu4_w32(false,xl0,true,w0,ci,false);
+            ci=__builtin_amdgcn_wmma_i32_16x16x16_iu4_w32(false,xl1,true,w1,ci,false);
+            const float d=D[sb*8+g].x;
+            acc+=(float)((sc>>(4*g))&15)*(d*(float)ci[0]);
+            if(GATE) {
+                const int2v g0={(int)gw.x,(int)gw.y},g1={(int)gw.z,(int)gw.w};
+                int8v gi=__builtin_amdgcn_wmma_i32_16x16x16_iu4_w32(true,xh0,true,g0,zero,false);
+                gi=__builtin_amdgcn_wmma_i32_16x16x16_iu4_w32(true,xh1,true,g1,gi,false);
+                gi=gi<<4;
+                gi=__builtin_amdgcn_wmma_i32_16x16x16_iu4_w32(false,xl0,true,g0,gi,false);
+                gi=__builtin_amdgcn_wmma_i32_16x16x16_iu4_w32(false,xl1,true,g1,gi,false);
+                gacc+=(float)((gc>>(4*g))&15)*(d*(float)gi[0]);
+            }
+        }
+    }
+    __shared__ float red[NW][2][16];
+    if(h==0){red[wv][0][r]=acc;red[wv][1][r]=gacc;}
+    __syncthreads();
+    if(wv==0&&h==0){
+        float a=0.f,b=0.f;
+#pragma unroll
+        for(int i=0;i<NW;i++){a+=red[i][0][r];b+=red[i][1][r];}
+        float value=a*scale+(xb?xb[row]:0.f);
+        if(GATE){
+            const float gate=b*gscale+(gb?gb[row]:0.f);
+            switch(glu){case GGML_GLU_OP_SWIGLU:value*=ggml_cuda_op_silu_single(gate);break;case GGML_GLU_OP_GEGLU:value*=ggml_cuda_op_gelu_single(gate);break;default:value*=gate;break;}
+        }
+        out[row]=value;
+    }
+#endif
+}

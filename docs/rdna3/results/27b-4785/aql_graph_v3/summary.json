@@ -1,0 +1,18 @@
+{
+  "label": "aql_graph_v3",
+  "returncode": 0,
+  "elapsed": 4.069680813001469,
+  "peak_vram_bytes": 15760207872,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 32,
+      "median_ts": 45.72055948945886,
+      "samples_ts": [
+        44.9031,
+        45.7206
+      ],
+      "latency_ms": 699.903946
+    }
+  ]
+}

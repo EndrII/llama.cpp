@@ -1,0 +1,8 @@
+4b base XT: stock upstream, Q4_K_M | {"pp512": 4754.2, "pp2048": 4611.1} | {"tg128@d0": 131.8}
+4b fork build, Q4_K_M | {"pp512": 5498.0, "pp2048": 5386.2} | {"tg128@d0": 145.1}
+4b ours, INT4 quality | {"pp512": 7153.7, "pp2048": 7026.2} | {"tg128@d0": 201.2}
+4b ours, INT4 fast | {"pp512": 11049.3, "pp2048": 10656.0} | {"tg128@d0": 201.2}
+9b base XT: stock upstream, Q4_K_M | {"pp512": 2758.6, "pp2048": 2668.6} | {"tg128@d0": 89.5}
+9b fork build, Q4_K_M | {"pp512": 2991.1, "pp2048": 2910.2} | {"tg128@d0": 95.9}
+9b ours, INT4 quality | {"pp512": 4060.2, "pp2048": 4037.6} | {"tg128@d0": 125.8}
+9b ours, INT4 fast | {"pp512": 6581.1, "pp2048": 6558.4} | {"tg128@d0": 125.8}

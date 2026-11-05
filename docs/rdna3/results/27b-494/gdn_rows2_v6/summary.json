@@ -1,0 +1,19 @@
+{
+  "label": "gdn_rows2_v6",
+  "returncode": 0,
+  "elapsed": 10.780411963991355,
+  "peak_vram_bytes": 15749734400,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 48.25441257179087,
+      "samples_ts": [
+        48.0054,
+        48.2555,
+        48.2533
+      ],
+      "latency_ms": 2652.607154
+    }
+  ]
+}

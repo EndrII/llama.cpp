@@ -1,0 +1,20 @@
+{
+  "label": "head_q4_0_speed",
+  "returncode": 0,
+  "elapsed": 13.131930188974366,
+  "peak_vram_bytes": 15802064896,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 48.69784318515633,
+      "samples_ts": [
+        48.4262,
+        48.696,
+        48.7031,
+        48.6978
+      ],
+      "latency_ms": 2628.453164
+    }
+  ]
+}

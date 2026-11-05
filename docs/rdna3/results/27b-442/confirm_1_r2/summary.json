@@ -1,0 +1,21 @@
+{
+  "label": "confirm_1_r2",
+  "returncode": 0,
+  "elapsed": 17.13847273401916,
+  "peak_vram_bytes": 15913189376,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 44.07438065615458,
+      "samples_ts": [
+        43.8978,
+        44.0819,
+        44.0779,
+        44.0709,
+        44.0706
+      ],
+      "latency_ms": 2904.181479
+    }
+  ]
+}

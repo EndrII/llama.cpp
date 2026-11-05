@@ -1,0 +1,20 @@
+{
+  "label": "runtime_hwqueue1",
+  "returncode": 0,
+  "elapsed": 14.183200306026265,
+  "peak_vram_bytes": 16256536576,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 44.17048358423785,
+      "samples_ts": [
+        44.0436,
+        44.1783,
+        44.1705,
+        44.1666
+      ],
+      "latency_ms": 2897.862772
+    }
+  ]
+}

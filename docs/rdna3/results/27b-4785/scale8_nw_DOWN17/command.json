@@ -1,0 +1,26 @@
+{
+  "command": [
+    "/home/svt/tuning27b50/bin/llama-bench",
+    "-m",
+    "/mnt/data/work27b/qwen38-27b-rotq4-gptq.gguf",
+    "-ngl",
+    "99",
+    "-t",
+    "12",
+    "-p",
+    "0",
+    "-n",
+    "128",
+    "-r",
+    "3",
+    "-o",
+    "json"
+  ],
+  "env": {
+    "HOME": "/home/svt",
+    "PATH": "/usr/bin:/bin",
+    "HIP_VISIBLE_DEVICES": "0",
+    "LD_LIBRARY_PATH": "/home/svt/tuning27b50/bin:/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_devel/lib:/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_core/lib:/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_libraries/lib",
+    "GGML_INT4_27B_NW_DOWN": "17"
+  }
+}

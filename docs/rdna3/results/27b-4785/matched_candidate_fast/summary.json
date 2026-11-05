@@ -1,0 +1,44 @@
+{
+  "label": "matched_candidate_fast",
+  "returncode": 0,
+  "elapsed": 20.092526335036382,
+  "peak_vram_bytes": 16282980352,
+  "results": [
+    {
+      "prompt": 512,
+      "gen": 0,
+      "median_ts": 1996.817330577294,
+      "samples_ts": [
+        1674.51,
+        2009.97,
+        1996.82,
+        1995.07
+      ],
+      "latency_ms": 256.408031
+    },
+    {
+      "prompt": 2048,
+      "gen": 0,
+      "median_ts": 1918.6322220781947,
+      "samples_ts": [
+        1920.79,
+        1918.63,
+        1920.82,
+        1918.63
+      ],
+      "latency_ms": 1067.427085
+    },
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 47.85607412525426,
+      "samples_ts": [
+        47.7711,
+        47.862,
+        47.8532,
+        47.8561
+      ],
+      "latency_ms": 2674.686596
+    }
+  ]
+}

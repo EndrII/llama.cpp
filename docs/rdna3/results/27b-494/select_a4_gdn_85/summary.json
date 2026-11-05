@@ -1,0 +1,20 @@
+{
+  "label": "select_a4_gdn_85",
+  "returncode": 0,
+  "elapsed": 13.234047380974516,
+  "peak_vram_bytes": 15661428736,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 48.88875132986236,
+      "samples_ts": [
+        48.5653,
+        48.8957,
+        48.887,
+        48.8888
+      ],
+      "latency_ms": 2618.189185
+    }
+  ]
+}

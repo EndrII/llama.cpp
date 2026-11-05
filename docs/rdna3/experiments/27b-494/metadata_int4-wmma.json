@@ -1,0 +1,429 @@
+[
+  {
+    "name": "(anonymous namespace)::k_row_scale(block_q4_0 const*, int, int, float*, int)",
+    "vgpr": 8,
+    "sgpr": 18,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "(anonymous namespace)::k_detect_gw(block_q4_0 const*, int, int, int*)",
+    "vgpr": 6,
+    "sgpr": 18,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "(anonymous namespace)::k_repack(block_q4_0 const*, int, int, float const*, unsigned char*, unsigned char*, int)",
+    "vgpr": 71,
+    "sgpr": 19,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "(anonymous namespace)::k_rot_f32(float const*, float*, int)",
+    "vgpr": 62,
+    "sgpr": 19,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "(anonymous namespace)::k_rot_pack(float const*, int, unsigned char*, unsigned char*, float*, float, float const*)",
+    "vgpr": 90,
+    "sgpr": 55,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "(anonymous namespace)::k_rot_pack8(float const*, int, unsigned char*, unsigned char*, unsigned char*, float*, float const*)",
+    "vgpr": 90,
+    "sgpr": 61,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "(anonymous namespace)::k_rot_q8_1(float const*, block_q8_1*, int)",
+    "vgpr": 58,
+    "sgpr": 18,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "(anonymous namespace)::k_rot_q8x(float const*, signed char*, HIP_vector_type<float, 2u>*, int, float const*)",
+    "vgpr": 66,
+    "sgpr": 29,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "(anonymous namespace)::k_rmsnorm_rot_q8x(float const*, float const*, float*, signed char*, HIP_vector_type<float, 2u>*, int, float)",
+    "vgpr": 52,
+    "sgpr": 30,
+    "scratch": 0,
+    "lds": 128
+  },
+  {
+    "name": "void (anonymous namespace)::k_head_requant<true>(block_q6_K const*, unsigned char*)",
+    "vgpr": 14,
+    "sgpr": 18,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_head_requant<false>(block_q6_K const*, unsigned char*)",
+    "vgpr": 7,
+    "sgpr": 18,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_gemm8w<2, 4>(unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, unsigned char const*, float const*, float*, int, int, int, float const*)",
+    "vgpr": 155,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_gemm8w<4, 4>(unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, unsigned char const*, float const*, float*, int, int, int, float const*)",
+    "vgpr": 163,
+    "sgpr": 55,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_gemm8<4>(unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, unsigned char const*, float const*, float*, int, int, int, float const*)",
+    "vgpr": 163,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_gemm<1, 4>(unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, float*, int, int, int, float const*)",
+    "vgpr": 177,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_gemm<2, 4>(unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, float*, int, int, int, float const*)",
+    "vgpr": 209,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_gemm<4, 4>(unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, float*, int, int, int, float const*)",
+    "vgpr": 201,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_gemm8w<2, 8>(unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, unsigned char const*, float const*, float*, int, int, int, float const*)",
+    "vgpr": 155,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_gemm8w<4, 8>(unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, unsigned char const*, float const*, float*, int, int, int, float const*)",
+    "vgpr": 163,
+    "sgpr": 55,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_gemm8<8>(unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, unsigned char const*, float const*, float*, int, int, int, float const*)",
+    "vgpr": 163,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_gemm<1, 8>(unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, float*, int, int, int, float const*)",
+    "vgpr": 177,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_gemm<2, 8>(unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, float*, int, int, int, float const*)",
+    "vgpr": 209,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_gemm<4, 8>(unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, float*, int, int, int, float const*)",
+    "vgpr": 201,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<8, 10, 100>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 195,
+    "sgpr": 66,
+    "scratch": 0,
+    "lds": 8320
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<8, 10, 85>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 195,
+    "sgpr": 66,
+    "scratch": 0,
+    "lds": 8320
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<8, 10, 0>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 238,
+    "sgpr": 65,
+    "scratch": 0,
+    "lds": 8320
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<8, 20, 100>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 195,
+    "sgpr": 66,
+    "scratch": 0,
+    "lds": 16640
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<8, 20, 85>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 195,
+    "sgpr": 66,
+    "scratch": 0,
+    "lds": 16640
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<8, 20, 0>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 238,
+    "sgpr": 65,
+    "scratch": 0,
+    "lds": 16640
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<8, 24, 100>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 195,
+    "sgpr": 66,
+    "scratch": 0,
+    "lds": 19968
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<8, 24, 85>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 195,
+    "sgpr": 66,
+    "scratch": 0,
+    "lds": 19968
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<8, 24, 0>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 239,
+    "sgpr": 65,
+    "scratch": 0,
+    "lds": 19968
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<8, 17, 100>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 195,
+    "sgpr": 66,
+    "scratch": 0,
+    "lds": 14144
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<8, 17, 85>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 195,
+    "sgpr": 66,
+    "scratch": 0,
+    "lds": 14144
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<8, 17, 0>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 238,
+    "sgpr": 65,
+    "scratch": 0,
+    "lds": 14144
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<2, 10, 100>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 134,
+    "sgpr": 60,
+    "scratch": 0,
+    "lds": 4480
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<2, 10, 85>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 134,
+    "sgpr": 60,
+    "scratch": 0,
+    "lds": 4480
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<2, 10, 0>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 132,
+    "sgpr": 59,
+    "scratch": 0,
+    "lds": 4480
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<4, 10, 100>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 179,
+    "sgpr": 62,
+    "scratch": 0,
+    "lds": 5760
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<4, 10, 85>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 179,
+    "sgpr": 62,
+    "scratch": 0,
+    "lds": 5760
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv_rot_rows<4, 10, 0>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 177,
+    "sgpr": 61,
+    "scratch": 0,
+    "lds": 5760
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<1, false, true, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 106,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 4480
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<1, false, false, false, false, true>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 92,
+    "sgpr": 22,
+    "scratch": 0,
+    "lds": 1280
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<1, false, false, true, true, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 94,
+    "sgpr": 23,
+    "scratch": 0,
+    "lds": 1280
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<1, false, false, true, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 94,
+    "sgpr": 19,
+    "scratch": 0,
+    "lds": 1280
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<4, true, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 94,
+    "sgpr": 42,
+    "scratch": 0,
+    "lds": 5120
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<1, true, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 83,
+    "sgpr": 32,
+    "scratch": 0,
+    "lds": 1280
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<1, false, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 92,
+    "sgpr": 22,
+    "scratch": 0,
+    "lds": 1280
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<2, true, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 99,
+    "sgpr": 38,
+    "scratch": 0,
+    "lds": 2560
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<2, false, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 93,
+    "sgpr": 29,
+    "scratch": 0,
+    "lds": 2560
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<3, true, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 91,
+    "sgpr": 40,
+    "scratch": 0,
+    "lds": 3840
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<3, false, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 91,
+    "sgpr": 31,
+    "scratch": 0,
+    "lds": 3840
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<4, false, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 109,
+    "sgpr": 33,
+    "scratch": 0,
+    "lds": 5120
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<5, true, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 112,
+    "sgpr": 44,
+    "scratch": 0,
+    "lds": 6400
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<5, false, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 99,
+    "sgpr": 36,
+    "scratch": 0,
+    "lds": 6400
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<6, true, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 127,
+    "sgpr": 47,
+    "scratch": 0,
+    "lds": 7680
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<6, false, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 100,
+    "sgpr": 38,
+    "scratch": 0,
+    "lds": 7680
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<7, true, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 136,
+    "sgpr": 47,
+    "scratch": 0,
+    "lds": 8960
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<7, false, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 114,
+    "sgpr": 34,
+    "scratch": 0,
+    "lds": 8960
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<8, true, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 137,
+    "sgpr": 67,
+    "scratch": 0,
+    "lds": 10240
+  },
+  {
+    "name": "void (anonymous namespace)::k_mv<8, false, false, false, false, false>(unsigned char const*, unsigned char const*, float const*, float, unsigned char const*, unsigned char const*, float const*, float, signed char const*, HIP_vector_type<float, 2u> const*, float*, float const*, float const*, int, int, int, int, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold, float*, int, (anonymous namespace)::mv_jobs_dev)",
+    "vgpr": 97,
+    "sgpr": 44,
+    "scratch": 0,
+    "lds": 10240
+  }
+]

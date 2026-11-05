@@ -1,0 +1,124 @@
+diff --git a/ggml/src/ggml-cuda/gated_delta_net.cu b/ggml/src/ggml-cuda/gated_delta_net.cu
+index 1b62b591f..766004f1f 100644
+--- a/ggml/src/ggml-cuda/gated_delta_net.cu
++++ b/ggml/src/ggml-cuda/gated_delta_net.cu
+@@ -171,6 +171,25 @@ gated_delta_net_cuda(const float * q,
+     }
+ }
+ 
++#if defined(GGML_USE_HIP)
++// wave32 reductions on DPP / permlanex16 instead of ds_bpermute (__shfl_xor): the decode kernel is a chain of dependent reductions, their latency is its runtime
++#if defined(__HIP_DEVICE_COMPILE__) && defined(__GFX11__)
++template <int CTRL> __device__ __forceinline__ float gdn_dpp(float x) { return __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(x), CTRL, 0xF, 0xF, false)); }
++__device__ __forceinline__ float gdn_swap_rows(float x) { return __int_as_float(__builtin_amdgcn_permlanex16(0, __float_as_int(x), 0x76543210u, 0xFEDCBA98u, false, false)); }
++__device__ __forceinline__ float gdn_wave_sum(float x) {
++    x += gdn_dpp<0xB1>(x); x += gdn_dpp<0x4E>(x); x += gdn_dpp<0x141>(x); x += gdn_dpp<0x140>(x);
++    return x + gdn_swap_rows(x);
++}
++#else
++__device__ __forceinline__ float gdn_swap_rows(float x) { return __shfl_xor(x, 16, 32); }
++__device__ __forceinline__ float gdn_wave_sum(float x) {
++#pragma unroll
++    for (int o = 16; o > 0; o >>= 1) { x += __shfl_xor(x, o, 32); }
++    return x;
++}
++#endif
++#endif
++
+ #if defined(GGML_USE_HIP)
+ // decode (one token): the GDN alpha / beta projections (bf16 [K] rows, one per head) and their gate math are computed by the kernel itself from the normalized
+ // f32 activation instead of by a skinny matmul launch of their own:  g = softplus(alpha.x + bias) * scl,  beta = sigmoid(beta.x)
+@@ -218,8 +237,7 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
+     auto l2n = [&](float4 v) {
+         if (l2eps < 0.f) { return v; }
+         float ss = v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
+-#pragma unroll
+-        for (int o = 16; o > 0; o >>= 1) { ss += __shfl_xor(ss, o, 32); }
++        ss = gdn_wave_sum(ss);
+         const float sc = rsqrtf(fmaxf(ss, l2eps * l2eps));
+         return make_float4(sc * v.x, sc * v.y, sc * v.z, sc * v.w);
+     };
+@@ -248,8 +266,7 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
+                     sbt = fmaf(__uint_as_float(bu[j] << 16), xs[2 * j], sbt); sbt = fmaf(__uint_as_float(bu[j] & 0xFFFF0000u), xs[2 * j + 1], sbt);
+                 }
+             }
+-#pragma unroll
+-            for (int o = 16; o > 0; o >>= 1) { sa += __shfl_xor(sa, o, 32); sbt += __shfl_xor(sbt, o, 32); }
++            sa = gdn_wave_sum(sa); sbt = gdn_wave_sum(sbt);
+             __shared__ float abr[4][2];
+             if (lane == 0) { abr[threadIdx.y][0] = sa; abr[threadIdx.y][1] = sbt; }
+             __syncthreads();
+@@ -282,7 +299,7 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
+             kv2 = fmaf(s[i + 2], kk.z, kv2); kv3 = fmaf(s[i + 3], kk.w, kv3);
+         }
+         float kv = (kv0 + kv1) + (kv2 + kv3);
+-        kv += __shfl_xor(kv, 16, 32);
++        kv += gdn_swap_rows(kv);
+         const float delta = (v_val - g_val * kv) * beta_val;
+ 
+         float a0 = 0.f, a1 = 0.f, a2 = 0.f, a3 = 0.f;
+@@ -295,7 +312,7 @@ gated_delta_net_cols(const float * __restrict__ q, const float * __restrict__ k,
+             s[i + 3] = fmaf(g_val, s[i + 3], kk.w * delta); a3 = fmaf(s[i + 3], qq.w, a3);
+         }
+         float att = (a0 + a1) + (a2 + a3);
+-        att += __shfl_xor(att, 16, 32);
++        att += gdn_swap_rows(att);
+         if (half == 0) { attn_data[col] = att * scale; }
+         attn_data += S_v * H;
+ 
+diff --git a/ggml/src/ggml-cuda/int4-wmma.cu b/ggml/src/ggml-cuda/int4-wmma.cu
+index c0c882f1c..8d51330b5 100644
+--- a/ggml/src/ggml-cuda/int4-wmma.cu
++++ b/ggml/src/ggml-cuda/int4-wmma.cu
+@@ -238,7 +238,7 @@ __global__ __launch_bounds__(256) void k_rot_pack(const float * __restrict__ X,
+             xr[sb * 256 + 16 * (2 * i + h) + lc] = hv;
+             mx = fmaxf(mx, fabsf(__half2float(hv)));
+         }
+-        for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor(mx, o, 32));
++        mx = wave32_max(mx);
+         if (lane == 0) amx[sb] = mx;
+     }
+     __syncthreads();
+@@ -413,7 +413,7 @@ __global__ __launch_bounds__(256) void k_rot_pack8(const float * __restrict__ X,
+             xr[sb * 256 + 16 * (2 * i + h) + lc] = hv;
+             mx = fmaxf(mx, fabsf(__half2float(hv)));
+         }
+-        for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor(mx, o, 32));
++        mx = wave32_max(mx);
+         if (lane == 0) amx[sb] = mx;
+     }
+     __syncthreads();
+@@ -701,8 +701,7 @@ __global__ __launch_bounds__(32) void k_rot_q8_1(const float * __restrict__ X, b
+     for (int i = 0; i < 8; i++) {
+         const float x = w[i] * 0.0625f;
+         float amax = fabsf(x), sum = x;
+-#pragma unroll
+-        for (int o = 16; o > 0; o >>= 1) { amax = fmaxf(amax, __shfl_xor(amax, o, 32)); sum += __shfl_xor(sum, o, 32); }
++        amax = wave32_max(amax); sum = wave32_sum(sum);
+         const float d = amax / 127.0f;
+         block_q8_1 & y = Y[(size_t) n * (K / 32) + sb * 8 + i];
+         y.qs[16 * h + lc] = amax == 0.0f ? 0 : (int8_t) roundf(x / d);
+@@ -877,7 +876,7 @@ __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__
+         }
+     }
+ #pragma unroll
+-    for (int j = 0; j < NC; j++) { acc[j] += __shfl_xor(acc[j], 16, 32); accg[j] += __shfl_xor(accg[j], 16, 32); }
++    for (int j = 0; j < NC; j++) { acc[j] += swap_rows(acc[j]); accg[j] += swap_rows(accg[j]); }
+     __shared__ float red[MV_NW][NC][2][16];
+     if (h == 0) {
+ #pragma unroll
+@@ -1283,6 +1282,14 @@ void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor *
+         CUDA_CHECK(cudaGetLastError());
+         return;
+     }
++    if (N == 8 && gate) {      // 8 columns with the gate need more than 256 VGPRs (the kernel would spill): two launches of 4
++        for (int half = 0; half < 2; half++) {
++            k_mv<4, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, g.Wp, g.Wh, g.S, inv2, xq_ptr + (size_t) half * 4 * K, xd_ptr + (size_t) half * 4 * (K / 32), (float *) dst->data + (size_t) half * 4 * stride_dst,
++                                                    xb ? xb + (size_t) half * 4 * stride_dst : nullptr, gb ? gb + (size_t) half * 4 * stride_dst : nullptr, glu, M, K, stride_dst);
++        }
++        CUDA_CHECK(cudaGetLastError());
++        return;
++    }
+     switch (N) { MV_CASE(1) MV_CASE(2) MV_CASE(3) MV_CASE(4) MV_CASE(5) MV_CASE(6) MV_CASE(7) MV_CASE(8) }
+ #undef MV_CASE
+     CUDA_CHECK(cudaGetLastError());

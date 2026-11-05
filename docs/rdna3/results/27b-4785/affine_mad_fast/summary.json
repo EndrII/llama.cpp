@@ -1,0 +1,32 @@
+{
+  "label": "affine_mad_fast",
+  "returncode": 0,
+  "elapsed": 9.42783081898233,
+  "peak_vram_bytes": 16282980352,
+  "results": [
+    {
+      "prompt": 512,
+      "gen": 0,
+      "median_ts": 1969.7567397362036,
+      "samples_ts": [
+        1638.93,
+        1970.82,
+        1969.76,
+        1966.1
+      ],
+      "latency_ms": 259.930574
+    },
+    {
+      "prompt": 2048,
+      "gen": 0,
+      "median_ts": 1895.0765548375823,
+      "samples_ts": [
+        1893.41,
+        1896.12,
+        1895.08,
+        1892.41
+      ],
+      "latency_ms": 1080.695128
+    }
+  ]
+}

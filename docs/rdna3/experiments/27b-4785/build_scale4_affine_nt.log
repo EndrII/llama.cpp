@@ -1,0 +1,19 @@
+[  0%] Built target llama-common-base
+[  0%] Built target cpp-httplib
+[  2%] Built target ggml-base
+[  8%] Built target ggml-cpu
+[  8%] Building HIP object ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/__/ggml-cuda/int4-wmma.cu.o
+/tmp/claude-1000/-home-svt--config-Claude-scratch-workspaces-117fffdf-33f1-49e9-9021-541b4b295944-da0f735d-531e-47d2-8484-5ba02f97cc28-scratch-2026-10-30-635bae/d13df678-bae8-40d5-990b-0ad25a01fe64/scratchpad/dff/src/ggml/src/ggml-cuda/int4-wmma.cu:889:44: error: address argument to nontemporal builtin must be a pointer to integer, float, pointer, or a vector of such types ('const uint4 *' (aka 'const HIP_vector_type<unsigned int, 4> *') invalid)
+  889 |         for (int g = 0; g < 4; g++) w[g] = __builtin_nontemporal_load((const uint4 *) (Wp + wo + g * 256));
+      |                                            ^                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/tmp/claude-1000/-home-svt--config-Claude-scratch-workspaces-117fffdf-33f1-49e9-9021-541b4b295944-da0f735d-531e-47d2-8484-5ba02f97cc28-scratch-2026-10-30-635bae/d13df678-bae8-40d5-990b-0ad25a01fe64/scratchpad/dff/src/ggml/src/ggml-cuda/int4-wmma.cu:894:49: error: address argument to nontemporal builtin must be a pointer to integer, float, pointer, or a vector of such types ('const uint4 *' (aka 'const HIP_vector_type<unsigned int, 4> *') invalid)
+  894 |             for (int g = 0; g < 4; g++) wg[g] = __builtin_nontemporal_load((const uint4 *) (Wp2 + wo + g * 256));
+      |                                                 ^                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/tmp/claude-1000/-home-svt--config-Claude-scratch-workspaces-117fffdf-33f1-49e9-9021-541b4b295944-da0f735d-531e-47d2-8484-5ba02f97cc28-scratch-2026-10-30-635bae/d13df678-bae8-40d5-990b-0ad25a01fe64/scratchpad/dff/src/ggml/src/ggml-cuda/int4-wmma.cu:1135:60: error: address argument to nontemporal builtin must be a pointer to integer, float, pointer, or a vector of such types ('const uint4 *' (aka 'const HIP_vector_type<unsigned int, 4> *') invalid)
+ 1135 |             for (int g = 0; g < 4; g++) { weights[ri][g] = __builtin_nontemporal_load((const uint4 *) (Wp + wo + g * 256)); }
+      |                                                            ^                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+3 errors generated when compiling for gfx1100.
+gmake[3]: *** [ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/build.make:491: ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/__/ggml-cuda/int4-wmma.cu.o] Error 1
+gmake[2]: *** [CMakeFiles/Makefile2:681: ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/all] Error 2
+gmake[1]: *** [CMakeFiles/Makefile2:995: tools/llama-bench/CMakeFiles/llama-bench.dir/rule] Error 2
+gmake: *** [Makefile:338: llama-bench] Error 2

@@ -1,0 +1,20 @@
+{
+  "label": "head_iq4_nl_speed",
+  "returncode": 0,
+  "elapsed": 13.231301676016301,
+  "peak_vram_bytes": 15804092416,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.12354571824895,
+      "samples_ts": [
+        48.8587,
+        49.1235,
+        49.1207,
+        49.1245
+      ],
+      "latency_ms": 2605.675102
+    }
+  ]
+}
