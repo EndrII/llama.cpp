@@ -1,4 +1,4 @@
-// Skinny bf16 matmul for RDNA3 prompt processing: dst[n][m] = sum_k src1[n][k] * src0[m][k] with bf16 weights (M <= 64, e.g. the GDN
+// Skinny bf16 matmul for RDNA3 prompt processing: dst[n][m] = sum_k src1[n][k] * src0[m][k] with bf16 weights (M <= 32 or M == 48, e.g. the GDN
 // alpha/beta projections), f32 activations and f32 output.  Replaces f32->bf16 convert + hipBLASLt gemm + bf16->f32 convert (three
 // launches) by one WMMA kernel; the activations are rounded to bf16 exactly as the convert did, but the result stays in f32.
 #include "mm-skinny-rdna3.cuh"
@@ -16,7 +16,6 @@ typedef __bf16 sk_bf16 __attribute__((ext_vector_type(16)));
 
 namespace {
 
-constexpr int SK_MAXMT = 2;     // M <= 32
 constexpr int SK_W = 16;        // waves per block, each takes a slice of K
 
 __device__ __forceinline__ uint32_t sk_bf16_bits(float f) {      // round to nearest even
@@ -24,6 +23,7 @@ __device__ __forceinline__ uint32_t sk_bf16_bits(float f) {      // round to nea
     return (b + 0x7FFFu + ((b >> 16) & 1u)) >> 16;
 }
 
+template <int SK_MAXMT>
 __global__ void __launch_bounds__(SK_W * 32) sk_kernel(const __bf16 * __restrict__ W, const float * __restrict__ X, float * __restrict__ out, int M, int N, int K,
                                                    int epi, const float * __restrict__ bias, const float * __restrict__ scl) {
     const int tid = threadIdx.x, w = tid >> 5, lane = tid & 31, hh = lane >> 4, lc = lane & 15;
@@ -38,7 +38,7 @@ __global__ void __launch_bounds__(SK_W * 32) sk_kernel(const __bf16 * __restrict
 
     const int64_t tok = t0 + lc;
     const float * xr = X + (tok < N ? tok : 0) * (int64_t) K;
-    constexpr int U = 5;                                  // k-steps with their loads in flight together
+    constexpr int U = SK_MAXMT == 3 ? 2 : 5;                                  // k-steps with their loads in flight together
     for (int k = w * kq; k < (w + 1) * kq; k += 16 * U) {
         float4 xf[U][4];
         uint4 wf[U][SK_MAXMT][2];
@@ -152,7 +152,7 @@ bool ggml_cuda_mul_mat_skinny_rdna3(ggml_backend_cuda_context & ctx, const ggml_
     if (src0->type != GGML_TYPE_BF16 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) { return false; }
     const int64_t K = src0->ne[0], M = src0->ne[1], N = src1->ne[1] * src1->ne[2] * src1->ne[3];
     const bool decode = N >= 1 && N <= 8;
-    if (M > 16 * SK_MAXMT || (decode ? (K % 8) : (M % 16 || K % (16 * SK_W) || N <= 8)) || src0->ne[2] != 1 || src0->ne[3] != 1 || src1->ne[0] != K) { return false; }
+    if ((M > 32 && M != 48) || (decode ? (K % 8) : (M % 16 || K % (16 * SK_W) || N <= 8)) || src0->ne[2] != 1 || src0->ne[3] != 1 || src1->ne[0] != K) { return false; }
     if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst) || (epi == 0 && dst->ne[0] != M) || ggml_nelements(dst) != N * M) { return false; }
     if (((uintptr_t) src0->data & 15) || ((uintptr_t) src1->data & 15)) { return false; }
     if (decode) {
@@ -161,7 +161,11 @@ bool ggml_cuda_mul_mat_skinny_rdna3(ggml_backend_cuda_context & ctx, const ggml_
         CUDA_CHECK(cudaGetLastError());
         return true;
     }
-    sk_kernel<<<dim3((unsigned) ((N + 15) / 16)), SK_W * 32, 0, ctx.stream()>>>((const __bf16 *) src0->data, (const float *) src1->data, (float *) dst->data, (int) M, (int) N, (int) K, epi, bias, scl);
+    if (M <= 32) {
+    sk_kernel<2><<<dim3((unsigned) ((N + 15) / 16)), SK_W * 32, 0, ctx.stream()>>>((const __bf16 *) src0->data, (const float *) src1->data, (float *) dst->data, (int) M, (int) N, (int) K, epi, bias, scl);
+    } else {
+    sk_kernel<3><<<dim3((unsigned) ((N + 15) / 16)), SK_W * 32, 0, ctx.stream()>>>((const __bf16 *) src0->data, (const float *) src1->data, (float *) dst->data, (int) M, (int) N, (int) K, epi, bias, scl);
+    }
     CUDA_CHECK(cudaGetLastError());
     return true;
 }
@@ -178,7 +182,7 @@ bool ggml_cuda_mul_mat_skinny_pair_rdna3(ggml_backend_cuda_context & ctx, const 
                                          ggml_tensor * dst0, int epi0, const float * bias0, const float * scl0, ggml_tensor * dst1, int epi1) {
     if (!GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[ctx.device].cc)) { return false; }
     const int64_t K = w0->ne[0], M = w0->ne[1], N = src1->ne[1] * src1->ne[2] * src1->ne[3];
-    if (w0->type != GGML_TYPE_BF16 || w1->type != GGML_TYPE_BF16 || src1->type != GGML_TYPE_F32 || w1->ne[0] != K || w1->ne[1] != M || N < 1 || N > 8 || K % 8 || M > 32) { return false; }
+    if (w0->type != GGML_TYPE_BF16 || w1->type != GGML_TYPE_BF16 || src1->type != GGML_TYPE_F32 || w1->ne[0] != K || w1->ne[1] != M || N < 1 || N > 8 || K % 8 || (M > 32 && M != 48)) { return false; }
     if (!ggml_is_contiguous(w0) || !ggml_is_contiguous(w1) || !ggml_is_contiguous(src1) || ggml_nelements(dst0) != N * M || ggml_nelements(dst1) != N * M) { return false; }
     if (((uintptr_t) w0->data & 15) || ((uintptr_t) w1->data & 15)) { return false; }
     const sk_job j0 = { (const __bf16 *) w0->data, (float *) dst0->data, epi0, bias0, scl0 };

@@ -785,15 +785,43 @@ static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer,
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
+struct ggml_cuda_input_copy { int device; std::vector<uint8_t> bytes; };
+static thread_local int ggml_cuda_input_batch_depth = 0;
+static thread_local std::vector<ggml_cuda_input_copy> ggml_cuda_input_copies;
+static void ggml_cuda_input_batch_flush() {
+    for (size_t i = 0; i < ggml_cuda_input_copies.size(); i++) {
+        bool seen = false;
+        for (size_t j = 0; j < i; j++) seen |= ggml_cuda_input_copies[j].device == ggml_cuda_input_copies[i].device;
+        if (!seen) {
+            ggml_cuda_set_device(ggml_cuda_input_copies[i].device);
+            CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+        }
+    }
+    ggml_cuda_input_copies.clear();
+}
+static void ggml_backend_cuda_input_batch_begin() { ++ggml_cuda_input_batch_depth; }
+static void ggml_backend_cuda_input_batch_end() {
+    GGML_ASSERT(ggml_cuda_input_batch_depth > 0);
+    if (--ggml_cuda_input_batch_depth == 0) ggml_cuda_input_batch_flush();
+}
+
 static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
-    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
-    CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+    const bool batched = ggml_cuda_input_batch_depth > 0 && size > 0 && size <= 65536;
+    const void * source = data;
+    if (batched) {
+        const auto * bytes = static_cast<const uint8_t *>(data);
+        ggml_cuda_input_copies.push_back({ctx->device, std::vector<uint8_t>(bytes, bytes + size)});
+        source = ggml_cuda_input_copies.back().bytes.data();
+    }
+    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, source, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+    if (!batched) CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
 static void ggml_backend_cuda_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+    ggml_cuda_input_batch_flush();
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
@@ -3550,7 +3578,7 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     }
 
     // GDN gates: skinny bf16 matmul -> reshape -> sigmoid, or -> reshape -> add(bias) -> softplus -> mul(scale), folded into the matmul epilogue
-    if (node->op == GGML_OP_MUL_MAT && node->src[0]->type == GGML_TYPE_BF16 && node->src[0]->ne[1] <= 32 && node->src[1]->type == GGML_TYPE_F32 &&
+    if (node->op == GGML_OP_MUL_MAT && node->src[0]->type == GGML_TYPE_BF16 && (node->src[0]->ne[1] <= 32 || node->src[0]->ne[1] == 48) && node->src[1]->type == GGML_TYPE_F32 &&
         i + 4 < cgraph->n_nodes && ggml_node_has_n_uses(cgraph, i, 1)) {
         const ggml_tensor * m1 = cgraph->nodes[i + 1];
         ggml_tensor * n2 = cgraph->nodes[i + 2];
@@ -5935,6 +5963,8 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
 }
 
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+    if (strcmp(name, "ggml_backend_cuda_input_batch_begin") == 0) return (void *)ggml_backend_cuda_input_batch_begin;
+    if (strcmp(name, "ggml_backend_cuda_input_batch_end") == 0) return (void *)ggml_backend_cuda_input_batch_end;
     GGML_UNUSED(reg);
     if (strcmp(name, "ggml_backend_comm_init") == 0) {
         return (void *)ggml_backend_cuda_comm_init;

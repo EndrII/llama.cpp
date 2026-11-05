@@ -19,6 +19,7 @@
 #if defined(GGML_USE_HIP)
 
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -49,6 +50,10 @@ static int64_t int4_wn4_min() { static const int64_t v = getenv("GGML_INT4_WN4_M
 #define INT4W_RSRC(p) __builtin_amdgcn_make_buffer_rsrc((void *)(p), 0, 0x7fffffff, 0x31004000)
 __device__ __forceinline__ int4v bl128(__amdgpu_buffer_rsrc_t r, int voff, int soff) { return __builtin_amdgcn_raw_buffer_load_b128(r, voff, soff, 0); }
 __device__ __forceinline__ int2v bl64(__amdgpu_buffer_rsrc_t r, int voff, int soff) { return __builtin_amdgcn_raw_buffer_load_b64(r, voff, soff, 0); }
+__device__ __forceinline__ uint4 nt128(const uint8_t * p, size_t offset) {
+    const int4v v = __builtin_amdgcn_raw_buffer_load_b128(INT4W_RSRC(p), (int) offset, 0, 6);
+    return make_uint4(v.x, v.y, v.z, v.w);
+}
 #define INT4W_LO(v) __builtin_shufflevector((v), (v), 0, 1)
 #define INT4W_HI(v) __builtin_shufflevector((v), (v), 2, 3)
 __device__ __forceinline__ void mul24a(int & out, int a, int b) { asm volatile("v_mul_i32_i24 %0, %1, %2" : "=v"(out) : "v"(a), "v"(b)); }
@@ -63,11 +68,11 @@ __device__ __forceinline__ float sign256(int j) { return (((uint32_t) j * 265443
 __device__ __forceinline__ _Float16 h16(int r, int c) { return (__builtin_popcount(r & c) & 1) ? (_Float16) -1.0f : (_Float16) 1.0f; }
 
 // ---------------------------------------------------------------------------------------------------------------- weight repack
-__global__ void k_row_scale(const block_q4_0 * __restrict__ W, int M, int nb, float * __restrict__ S) {
+__global__ void k_row_scale(const block_q4_0 * __restrict__ W, int M, int nb, float * __restrict__ S, int sh) {
     const int m = blockIdx.x * blockDim.x + threadIdx.x; if (m >= M) return;
     float mx = 0.f;
     for (int b = 0; b < nb; b++) mx = fmaxf(mx, fabsf(__half2float(W[(size_t) m * nb + b].d)));
-    S[m] = mx;
+    S[m] = mx * ((float) (1 << sh) / 15.f);
 }
 // scale-group size of a Q4_0 tensor: bit0 set if some aligned pair of 32-groups has different scales, bit1 if some aligned quad does
 __global__ void k_detect_gw(const block_q4_0 * __restrict__ W, int M, int nb, int * __restrict__ flags) {
@@ -104,7 +109,12 @@ __global__ void k_repack(const block_q4_0 * __restrict__ W, int K, int nsb, cons
         }
     *(uint4 *) (Wp + ((size_t) ((ft * nsb + sb) * 8 + g)) * 256 + r * 16) = make_uint4(w[0], w[1], w[2], w[3]);
     const float s = S[m] > 0.f ? S[m] : 1.f;
-    ((uint16_t *) (Wh + ((size_t) ((ft * nsb + sb) * 16 + r)) * 16))[g] = (uint16_t) lrintf(fabsf(d) / s * (float) (1 << sh));
+    if ((g & 1) == 0) {
+        const float d1 = fabsf(__half2float(W[(size_t) m * nb + sb * 8 + g + 1].d));
+        const int q0 = min(15, max(0, (int) lrintf(fabsf(d) / s * (float) (1 << sh))));
+        const int q1 = min(15, max(0, (int) lrintf(d1 / s * (float) (1 << sh))));
+        Wh[((size_t) ((ft * nsb + sb) * 16 + r)) * 4 + g / 2] = q0 | (q1 << 4);
+    }
 }
 
 // wave32 butterfly reductions on DPP / permlanex16 (a few cycles each) instead of ds_bpermute (__shfl_xor), whose latency dominated the
@@ -333,11 +343,11 @@ __global__ __launch_bounds__(WN * 32) void k_gemm(const uint8_t * __restrict__ W
             for (int i = 0; i < 8; i++) itot[a][b][i] = 0;
 
     for (int sb = 0; sb < nsb; sb++) {
-        uint32_t scw[MI][4];
+        uint32_t scw[MI][1];
 #pragma unroll
         for (int mi = 0; mi < MI; mi++) {
-            const int4v h0 = bl128(rWh, lc * 16, (((ft0 + mi) * nsb + sb) * 16) * 16);
-            scw[mi][0] = h0.x; scw[mi][1] = h0.y; scw[mi][2] = h0.z; scw[mi][3] = h0.w;
+            const uint32_t h0 = *(const uint32_t *) (Wh + (((ft0 + mi) * nsb + sb) * 16 + lc) * 4);
+            scw[mi][0] = h0;
         }
         int2v mmw[NJ];
 #pragma unroll
@@ -400,7 +410,7 @@ __global__ __launch_bounds__(WN * 32) void k_gemm(const uint8_t * __restrict__ W
 #pragma unroll
                 for (int mi = 0; mi < MI; mi++) {
                     const int g = (u0 + uc) * GW;
-                    const int scg = (int) ((scw[mi][g >> 1] >> (16 * (g & 1))) & 0xFFFF);
+                    const int scg = (int) ((scw[mi][0] >> (4 * g)) & 0xF);
 #pragma unroll
                     for (int nj = 0; nj < NJ; nj++)
 #pragma unroll
@@ -514,11 +524,11 @@ __global__ __launch_bounds__(WN * 32) void k_gemm8(const uint8_t * __restrict__ 
             for (int i = 0; i < 8; i++) tot[a][b][i] = 0.f;
 
     for (int sb = 0; sb < nsb; sb++) {
-        uint32_t scw[MI][4];
+        uint32_t scw[MI][1];
 #pragma unroll
         for (int mi = 0; mi < MI; mi++) {
-            const int4v h0 = bl128(rWh, lc * 16, (((ft0 + mi) * nsb + sb) * 16) * 16);
-            scw[mi][0] = h0.x; scw[mi][1] = h0.y; scw[mi][2] = h0.z; scw[mi][3] = h0.w;
+            const uint32_t h0 = *(const uint32_t *) (Wh + (((ft0 + mi) * nsb + sb) * 16 + lc) * 4);
+            scw[mi][0] = h0;
         }
         int2v mmw[NJ];
 #pragma unroll
@@ -571,7 +581,7 @@ __global__ __launch_bounds__(WN * 32) void k_gemm8(const uint8_t * __restrict__ 
             __builtin_amdgcn_sched_barrier(0);
 #pragma unroll
             for (int mi = 0; mi < MI; mi++) {
-                const int scg = (int) ((scw[mi][u >> 1] >> (16 * (u & 1))) & 0xFFFF);
+                const int scg = (int) ((scw[mi][0] >> (4 * u)) & 0xF);
 #pragma unroll
                 for (int nj = 0; nj < NJ; nj++)
 #pragma unroll
@@ -638,11 +648,11 @@ __global__ __launch_bounds__(WN * 32) void k_gemm8w(const uint8_t * __restrict__
             for (int i = 0; i < 8; i++) tot[a][b][i] = 0.f;
 
     for (int sb = 0; sb < nsb; sb++) {
-        uint32_t scw[MI][4];
+        uint32_t scw[MI][1];
 #pragma unroll
         for (int mi = 0; mi < MI; mi++) {
-            const int4v h0 = bl128(rWh, lc * 16, (((ft0 + mi) * nsb + sb) * 16) * 16);
-            scw[mi][0] = h0.x; scw[mi][1] = h0.y; scw[mi][2] = h0.z; scw[mi][3] = h0.w;
+            const uint32_t h0 = *(const uint32_t *) (Wh + (((ft0 + mi) * nsb + sb) * 16 + lc) * 4);
+            scw[mi][0] = h0;
         }
         int2v mmw[NJ];
 #pragma unroll
@@ -697,7 +707,7 @@ __global__ __launch_bounds__(WN * 32) void k_gemm8w(const uint8_t * __restrict__
             __builtin_amdgcn_sched_barrier(0);
 #pragma unroll
             for (int mi = 0; mi < MI; mi++) {
-                const int scg = (int) ((scw[mi][u0 >> 1] >> (16 * (u0 & 1))) & 0xFFFF);
+                const int scg = (int) ((scw[mi][0] >> (4 * u0)) & 0xF);
 #pragma unroll
                 for (int nj = 0; nj < NJ; nj++)
 #pragma unroll
@@ -849,16 +859,16 @@ __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__ 
 #pragma unroll
     for (int j = 0; j < NC; j++) { acc[j] = 0.f; accg[j] = 0.f; }
     for (int sb = wv; sb < nsb; sb += MV_NW) {
-        const size_t wo = ((size_t) (ft * nsb + sb) * 8 + h * 4) * 256 + r * 16, so = ((size_t) (ft * nsb + sb) * 16 + r) * 16 + h * 8;
+        const size_t wo = ((size_t) (ft * nsb + sb) * 8 + h * 4) * 256 + r * 16, so = ((size_t) (ft * nsb + sb) * 16 + r) * 4 + h * 2;
         uint4 w[4], wg[4];
 #pragma unroll
-        for (int g = 0; g < 4; g++) w[g] = *(const uint4 *) (Wp + wo + g * 256);
-        const uint2 sc = *(const uint2 *) (Wh + so);
-        uint2 scg = make_uint2(0, 0);
+        for (int g = 0; g < 4; g++) w[g] = nt128(Wp, wo + g * 256);
+        const uint32_t sc = *(const uint16_t *) (Wh + so);
+        uint32_t scg = 0;
         if (GATE) {
 #pragma unroll
-            for (int g = 0; g < 4; g++) wg[g] = *(const uint4 *) (Wp2 + wo + g * 256);
-            scg = *(const uint2 *) (Wh2 + so);
+            for (int g = 0; g < 4; g++) wg[g] = nt128(Wp2, wo + g * 256);
+            scg = *(const uint16_t *) (Wh2 + so);
         }
 #pragma unroll
         for (int j = 0; j < NC; j++) {
@@ -886,8 +896,8 @@ __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__ 
                     si = sdot4((int) ((ww[wi] & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2 * wi], si);
                     si = sdot4((int) (((ww[wi] >> 4) & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2 * wi + 1], si);
                 }
-                const uint32_t sw = g < 2 ? sc.x : sc.y;
-                acc[j] += (float) ((sw >> (16 * (g & 1))) & 0xFFFF) * (ds.x * (float) si - 8.f * ds.y);
+                const uint32_t sw = sc;
+                acc[j] += (float) ((sw >> (4 * g)) & 0xF) * (ds.x * (float) si - 8.f * ds.y);
                 if (GATE) {
                     const uint32_t wwg[4] = {wg[g].x, wg[g].y, wg[g].z, wg[g].w};
                     int sg = 0;
@@ -896,8 +906,8 @@ __global__ __launch_bounds__(32 * MV_NW) void k_mv(const uint8_t * __restrict__ 
                         sg = sdot4((int) ((wwg[wi] & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2 * wi], sg);
                         sg = sdot4((int) (((wwg[wi] >> 4) & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2 * wi + 1], sg);
                     }
-                    const uint32_t swg = g < 2 ? scg.x : scg.y;
-                    accg[j] += (float) ((swg >> (16 * (g & 1))) & 0xFFFF) * (ds.x * (float) sg - 8.f * ds.y);
+                    const uint32_t swg = scg;
+                    accg[j] += (float) ((swg >> (4 * g)) & 0xF) * (ds.x * (float) sg - 8.f * ds.y);
                 }
             }
         }
@@ -982,6 +992,107 @@ int int4_min_n() {
     return n;
 }
 
+// Optional experiment: keep the GGUF unchanged and requantize only its Q6_K
+// vocabulary projection in the existing device allocation before graph capture.
+__device__ __constant__ static const int head_iq4_values[16] = {-127,-104,-83,-65,-49,-35,-22,-10,1,13,25,38,53,69,89,113};
+__device__ __forceinline__ int head_nearest(float x) {
+    int lo=0, hi=15;
+#pragma unroll
+    for(int i=0;i<4;i++){const int m=(lo+hi)/2;if((float)head_iq4_values[m]<x)lo=m+1;else hi=m;}
+    if(lo>0&&fabsf(x-head_iq4_values[lo-1])<fabsf(x-head_iq4_values[lo]))--lo;
+    return lo;
+}
+template <bool NL>
+__global__ __launch_bounds__(32) void k_head_requant(const block_q6_K * __restrict__ src, uint8_t * __restrict__ dst) {
+    const int lane=threadIdx.x, group=blockIdx.x&7;
+    const block_q6_K & b=src[blockIdx.x/8];
+    const int e=group*32+lane, ip=e/128, il=e&31, part=(e&127)/32;
+    const int ql=b.ql[64*ip+il+(part&1)*32], qh=b.qh[32*ip+il];
+    const int q=(((part<2?ql&15:ql>>4)|(((qh>>(2*part))&3)<<4))-32);
+    const float x=__half2float(b.d)*(float)b.scales[8*ip+il/16+2*part]*(float)q;
+    const float am=wave32_max(fabsf(x));
+    const unsigned mask=(unsigned)__ballot(fabsf(x)==am);
+    const float mx=__shfl(x,__ffs(mask)-1,32);
+    float d=0.f;
+    int code=0;
+    if(NL){
+        d=mx/127.f;
+        float id=d!=0.f?1.f/d:0.f;
+        const float weight=x*x;
+        int l=head_nearest(id*x);
+        float level=(float)head_iq4_values[l];
+        float sx=wave32_sum(weight*level*x), sq=wave32_sum(weight*level*level);
+        d=sq>0.f?sx/sq:0.f;
+        float best=d*sx;
+        for(int t=-7;t<=7;t++){
+            id=mx!=0.f?(float)(t-127)/mx:0.f;
+            l=head_nearest(id*x);level=(float)head_iq4_values[l];
+            sx=wave32_sum(weight*level*x);sq=wave32_sum(weight*level*level);
+            if(sq>0.f&&sx*sx>best*sq){d=sx/sq;best=d*sx;}
+        }
+        code=head_nearest(d!=0.f?x/d:0.f);
+    }else{
+        d=-mx/8.f;
+        code=min(15,max(0,(int)(d!=0.f?x/d+8.5f:8.f)));
+    }
+    const int other=__shfl(code,lane+16,32);
+    uint8_t * out=dst+(size_t)blockIdx.x*18;
+    if(lane==0)*(__half*)out=__float2half(d);
+    if(lane<16)out[2+lane]=(uint8_t)(code|(other<<4));
+}
+static void maybe_requant_head(cudaStream_t stream, const ggml_tensor * tensor) {
+    const char * option=getenv("GGML_INT4_HEAD_REQUANT");
+    if(!option||tensor->type!=GGML_TYPE_Q6_K||tensor->ne[0]!=5120||tensor->ne[1]!=248320||tensor->ne[2]!=1||tensor->ne[3]!=1||strcmp(tensor->name,"output.weight"))return;
+    ggml_type external_type = GGML_TYPE_COUNT;
+    if (!strcmp(option,"iq4_xs")) external_type=GGML_TYPE_IQ4_XS;
+    if (external_type != GGML_TYPE_COUNT) {
+        const char * path=getenv("GGML_INT4_HEAD_FILE");
+        GGML_ASSERT(path);
+        hipStreamCaptureStatus status=hipStreamCaptureStatusNone;
+        CUDA_CHECK(hipStreamIsCapturing(stream,&status));GGML_ASSERT(status==hipStreamCaptureStatusNone);
+        FILE * f=fopen(path,"rb");GGML_ASSERT(f);
+        const size_t row_bytes=ggml_row_size(external_type,tensor->ne[0]);
+        const size_t size=row_bytes*tensor->ne[1];
+        GGML_ASSERT(fseeko(f,0,SEEK_END)==0);GGML_ASSERT((size_t)ftello(f)==size);rewind(f);
+        GGML_ASSERT(size<=ggml_nbytes(tensor));
+        std::vector<uint8_t> chunk(16*1024*1024);
+        for(size_t pos=0;pos<size;pos+=chunk.size()){
+            const size_t n=std::min(chunk.size(),size-pos);GGML_ASSERT(fread(chunk.data(),1,n,f)==n);
+            CUDA_CHECK(cudaMemcpyAsync((uint8_t*)tensor->data+pos,chunk.data(),n,cudaMemcpyHostToDevice,stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+        }
+        fclose(f);
+        ggml_tensor * t=const_cast<ggml_tensor*>(tensor);
+        t->type=external_type;t->nb[0]=ggml_type_size(external_type);t->nb[1]=row_bytes;
+        for(int i=2;i<4;i++)t->nb[i]=t->nb[i-1]*t->ne[i-1];
+        GGML_LOG_INFO("int4: experimental output.weight Q6_K -> %s from %s in place; GGUF unchanged\n",option,path);
+        return;
+    }
+    const bool nonlinear=strcmp(option,"iq4_nl")==0;
+    if(!nonlinear&&strcmp(option,"q4_0"))return;
+    hipStreamCaptureStatus status=hipStreamCaptureStatusNone;
+    CUDA_CHECK(hipStreamIsCapturing(stream,&status));GGML_ASSERT(status==hipStreamCaptureStatusNone);
+    constexpr size_t CHUNK=65536;
+    const size_t nb=(size_t)ggml_nelements(tensor)/256;
+    block_q6_K * temp;
+    CUDA_CHECK(cudaMalloc((void**)&temp,CHUNK*sizeof(block_q6_K)));
+    uint8_t * bytes=(uint8_t*)tensor->data;
+    for(size_t offset=0;offset<nb;offset+=CHUNK){
+        const size_t count=std::min(CHUNK,nb-offset);
+        CUDA_CHECK(cudaMemcpyAsync(temp,bytes+offset*sizeof(block_q6_K),count*sizeof(block_q6_K),cudaMemcpyDeviceToDevice,stream));
+        if(nonlinear)k_head_requant<true><<<dim3((unsigned)(count*8)),32,0,stream>>>(temp,bytes+offset*8*18);
+        else k_head_requant<false><<<dim3((unsigned)(count*8)),32,0,stream>>>(temp,bytes+offset*8*18);
+        CUDA_CHECK(cudaGetLastError());
+    }
+    CUDA_CHECK(cudaStreamSynchronize(stream));CUDA_CHECK(cudaFree(temp));
+    ggml_tensor * mutable_tensor=const_cast<ggml_tensor*>(tensor);
+    mutable_tensor->type=nonlinear?GGML_TYPE_IQ4_NL:GGML_TYPE_Q4_0;
+    mutable_tensor->nb[0]=ggml_type_size(mutable_tensor->type);
+    mutable_tensor->nb[1]=mutable_tensor->nb[0]*(size_t)mutable_tensor->ne[0]/32;
+    for(int i=2;i<4;i++)mutable_tensor->nb[i]=mutable_tensor->nb[i-1]*mutable_tensor->ne[i-1];
+    GGML_LOG_INFO("int4: experimental output.weight Q6_K -> %s in place; GGUF unchanged\n",option);
+}
+
 struct Int4Weights { uint8_t * Wp = nullptr; uint8_t * Wh = nullptr; float * S = nullptr; int gw = 1; bool inplace = false; int sh = SH; };
 std::mutex g_mu;
 std::unordered_map<const void *, Int4Weights> g_w;
@@ -1019,7 +1130,7 @@ Int4Weights get_weights(cudaStream_t stream, const ggml_tensor * src0) {
         w.Wh = (uint8_t *) src0->data + (size_t) M * K / 2;     // M*K/2 + M*nsb*16 == M*K/32*18 == ggml_nbytes(src0)
     } else {
         CUDA_CHECK(cudaMalloc((void **) &w.Wp, (size_t) M * K / 2));
-        CUDA_CHECK(cudaMalloc((void **) &w.Wh, (size_t) M * nsb * 16));
+        CUDA_CHECK(cudaMalloc((void **) &w.Wh, (size_t) M * nsb * 4));
     }
     CUDA_CHECK(cudaMalloc((void **) &w.S, (size_t) M * sizeof(float)));
     {
@@ -1029,7 +1140,7 @@ Int4Weights get_weights(cudaStream_t stream, const ggml_tensor * src0) {
         CUDA_CHECK(cudaFree(flags));
         if (f & 1) w.gw = 1; else if (f & 2) w.gw = 2; else w.gw = 4;
     }
-    k_row_scale<<<(M + 127) / 128, 128, 0, stream>>>((const block_q4_0 *) src, M, K / 32, w.S);
+    k_row_scale<<<(M + 127) / 128, 128, 0, stream>>>((const block_q4_0 *) src, M, K / 32, w.S, sh);
     k_repack<<<dim3(M, nsb), 8, 0, stream>>>((const block_q4_0 *) src, K, nsb, w.S, w.Wp, w.Wh, sh);
     CUDA_CHECK(cudaGetLastError());
     if (ip) { CUDA_CHECK(cudaStreamSynchronize(stream)); CUDA_CHECK(cudaFree(tmp)); }
@@ -1065,6 +1176,84 @@ template <typename T> void ac_reserve(T *& p, size_t & cap, size_t bytes) {
     if (bytes <= cap) return;
     CUDA_CHECK(cudaMalloc((void **) &p, bytes));      // the old block stays alive for graphs captured with it
     cap = bytes;
+}
+
+
+// Several output-row tiles share one fused activation rotation.
+template <int ROWS, int NW = 10>
+__global__ __launch_bounds__(32 * NW) void k_mv_rot_rows(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ S, float inv,
+        const float * __restrict__ X, const float * __restrict__ Y, float * __restrict__ out, const float * __restrict__ residual,
+        int K, int mode, int ystride, const float * __restrict__ norm, float eps) {
+    const int lane = threadIdx.x, r = lane & 15, h = lane >> 4, wv = threadIdx.y;
+    const int nsb = K / 256, ft0 = blockIdx.x * ROWS;
+    __shared__ __align__(16) int8_t rq[NW][256];
+    __shared__ __align__(16) float2 rd[NW][8];
+    __shared__ float red[ROWS][NW][16];
+    half16v rb1, ra2;
+#pragma unroll
+    for (int k = 0; k < 16; k++) { rb1[k] = h16(k, r); ra2[k] = h16(r, k < 8 ? 2 * k : 2 * (k - 8) + 1); }
+    float acc[ROWS], scales[ROWS], res[ROWS];
+#pragma unroll
+    for (int ri = 0; ri < ROWS; ri++) {
+        acc[ri] = 0.f;
+        scales[ri] = S[(ft0 + ri) * 16 + r];
+        res[ri] = residual && h == 0 ? residual[(ft0 + ri) * 16 + r] : 0.f;
+    }
+    for (int sb = wv; sb < nsb; sb += NW) {
+        uint4 weights[ROWS][4];
+        uint32_t subscales[ROWS];
+#pragma unroll
+        for (int ri = 0; ri < ROWS; ri++) {
+            const size_t wo = ((size_t) ((ft0 + ri) * nsb + sb) * 8 + h * 4) * 256 + r * 16;
+            const size_t so = ((size_t) ((ft0 + ri) * nsb + sb) * 16 + r) * 4 + h * 2;
+#pragma unroll
+            for (int g = 0; g < 4; g++) { weights[ri][g] = nt128(Wp, wo + g * 256); }
+            subscales[ri] = *(const uint16_t *) (Wh + so);
+        }
+        const float8v wr = rotate_block(X + sb * 256, lane, rb1, ra2, Y ? Y + (size_t) sb * ystride : nullptr, mode, norm, eps);
+        quant_rot8(wr, lane, &rq[wv][0], &rd[wv][0]);
+        __builtin_amdgcn_wave_barrier();
+        const uint4 * xq = (const uint4 *) &rq[wv][h * 128];
+        const float4 * xd = (const float4 *) &rd[wv][h * 4];
+        uint4 xv[8];
+        float4 dv[2];
+#pragma unroll
+        for (int i = 0; i < 8; i++) { xv[i] = xq[i]; }
+        dv[0] = xd[0]; dv[1] = xd[1];
+#pragma unroll
+        for (int ri = 0; ri < ROWS; ri++) {
+#pragma unroll
+            for (int g = 0; g < 4; g++) {
+                const float2 ds = g < 2 ? (g == 0 ? make_float2(dv[0].x, dv[0].y) : make_float2(dv[0].z, dv[0].w)) : (g == 2 ? make_float2(dv[1].x, dv[1].y) : make_float2(dv[1].z, dv[1].w));
+                const uint32_t xw[8] = {xv[2*g].x,xv[2*g].y,xv[2*g].z,xv[2*g].w,xv[2*g+1].x,xv[2*g+1].y,xv[2*g+1].z,xv[2*g+1].w};
+                const uint4 w = weights[ri][g];
+                const uint32_t ww[4] = {w.x,w.y,w.z,w.w};
+                int si = 0;
+#pragma unroll
+                for (int wi = 0; wi < 4; wi++) {
+                    si = sdot4((int) ((ww[wi] & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2*wi], si);
+                    si = sdot4((int) (((ww[wi] >> 4) & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2*wi+1], si);
+                }
+                const uint32_t sw = subscales[ri];
+                acc[ri] += (float) ((sw >> (4 * g)) & 0xF) * (ds.x * (float) si - 8.f * ds.y);
+            }
+        }
+    }
+#pragma unroll
+    for (int ri = 0; ri < ROWS; ri++) {
+        acc[ri] += swap_rows(acc[ri]);
+        if (h == 0) { red[ri][wv][r] = acc[ri]; }
+    }
+    __syncthreads();
+    if (wv == 0 && h == 0) {
+#pragma unroll
+        for (int ri = 0; ri < ROWS; ri++) {
+            float sum = 0.f;
+#pragma unroll
+            for (int q = 0; q < NW; q++) { sum += red[ri][q][r]; }
+            out[(ft0 + ri) * 16 + r] = sum * (scales[ri] * inv) + res[ri];
+        }
+    }
 }
 
 
@@ -1177,6 +1366,7 @@ void ggml_cuda_int4_prepare(ggml_backend_cuda_context & ctx, const ggml_cgraph *
         const ggml_tensor * n = cgraph->nodes[i];
         if (n->op != GGML_OP_MUL_MAT) continue;
         const ggml_tensor * w = n->src[0];
+        maybe_requant_head(ctx.stream(), w);
         if (!ggml_cuda_int4_rotated(w) || !inplace_eligible(w)) continue;
         get_weights(ctx.stream(), w);          // converts on first sight
     }
@@ -1277,6 +1467,16 @@ void ggml_cuda_int4_matvec(ggml_backend_cuda_context & ctx, const ggml_tensor * 
     case NCV: if (gate) k_mv<NCV, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, g.Wp, g.Wh, g.S, inv2, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst); \
               else      k_mv<NCV, false><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, nullptr, nullptr, nullptr, 0.f, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst); break;
     if (rot) {
+        static const int rows_27b = getenv("GGML_INT4_27B_ROWS") ? atoi(getenv("GGML_INT4_27B_ROWS")) : 4;
+        if (M == 5120 && (K == 6144 || K == 17408) && (rows_27b == 2 || rows_27b == 4)) {
+            const auto run_rows = [&](auto rows_c) {
+                constexpr int ROWS = decltype(rows_c)::value;
+                k_mv_rot_rows<ROWS><<<dim3(M / (16 * ROWS)), blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, glu_x ? glu_x : (const float *) src1->data, glu_y, (float *) dst->data, xb, K, mode, ystride, nw, eps);
+            };
+            if (rows_27b == 2) run_rows(std::integral_constant<int, 2>{}); else run_rows(std::integral_constant<int, 4>{});
+            CUDA_CHECK(cudaGetLastError());
+            return;
+        }
         k_mv<1, false, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, nullptr, nullptr, nullptr, 0.f, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst, glu_x ? glu_x : (const float *) src1->data, glu_y, mode, ystride, nw, eps);
         CUDA_CHECK(cudaGetLastError());
         return;

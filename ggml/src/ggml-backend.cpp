@@ -10,6 +10,7 @@
 
 #include "ggml-backend.h"
 #include "ggml-backend-impl.h"
+#include <cstdlib>
 #include "ggml-alloc.h"
 #include "ggml-impl.h"
 
@@ -1547,6 +1548,36 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
     return true;
 }
 
+// Opt-in backend extension: keep source storage alive while a decode input
+// transaction uploads its tensors, then synchronize once before graph compute.
+class ggml_input_batch_scope {
+    using hook = void (*)();
+    using hooks = std::vector<std::pair<hook, hook>>;
+    const hooks * active = nullptr;
+public:
+    explicit ggml_input_batch_scope(bool decode) {
+        static const bool requested = [] { const char * e = std::getenv("GGML_CUDA_BATCH_INPUTS"); return e && std::atoi(e); }();
+        if (!decode || !requested) return;
+        static const hooks available = [] {
+            hooks result;
+            for (size_t i = 0; i < ggml_backend_reg_count(); i++) {
+                const auto reg = ggml_backend_reg_get(i);
+                const auto begin = reinterpret_cast<hook>(ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_input_batch_begin"));
+                const auto end = reinterpret_cast<hook>(ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_input_batch_end"));
+                if (begin && end) result.emplace_back(begin, end);
+            }
+            return result;
+        }();
+        active = &available;
+        for (const auto & h : *active) h.first();
+    }
+    ~ggml_input_batch_scope() {
+        if (active) for (auto i = active->rbegin(); i != active->rend(); ++i) i->second();
+    }
+    ggml_input_batch_scope(const ggml_input_batch_scope &) = delete;
+    ggml_input_batch_scope & operator=(const ggml_input_batch_scope &) = delete;
+};
+
 static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     struct ggml_backend_sched_split * splits = sched->splits;
@@ -1560,6 +1591,16 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
 
+        // Preserve user-input lifetimes and complete the upload transaction
+        // before launching the split. Restrict the extension to small host inputs.
+        {
+        bool batchable = split->n_inputs > 0;
+        for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+            const ggml_tensor * t = split->inputs[input_id];
+            const auto buffer = t->view_src ? t->view_src->buffer : t->buffer;
+            batchable &= buffer && ggml_backend_buffer_is_host(buffer) && ggml_nbytes(t) <= 65536;
+        }
+        ggml_input_batch_scope upload_transaction(batchable);
         // copy the input tensors to the split backend
         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
             ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, split->inputs[input_id]);
@@ -1681,6 +1722,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     }
                 }
             }
+        }
         }
 
         if (!sched->callback_eval) {
