@@ -1,6 +1,6 @@
-# llama.cpp
+# Qwen Rotated INT4 on AMD RDNA3
 
-## Ossicle: rotated INT4 on RX 7900 XT
+## RX 7900 XT results
 
 | Model | Prefill pp512 (tokens/s) | Decode (tokens/s) |
 |---|---:|---:|
@@ -134,3 +134,7 @@ The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-or
 - [nlohmann/json](https://github.com/nlohmann/json) - Single-header JSON library, used by various tools/examples - MIT License
 - [miniaudio.h](https://github.com/mackron/miniaudio) - Single-header audio format decoder, used by multimodal subsystem - Public domain
 - [subprocess.h](https://github.com/sheredom/subprocess.h) - Single-header process launching solution for C and C++ - Public domain
+
+## Additional model support
+
+Also added INT4 acceleration for **Ossicle 4B**: **10,934 tokens/s prefill (pp512)** and **200.6 tokens/s decode (tg128)** on the RX 7900 XT. See the [paper's Ossicle 4B results](docs/rdna3/papers/qwen35_int4_summary.tex#L194).

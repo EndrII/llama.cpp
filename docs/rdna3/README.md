@@ -1,4 +1,4 @@
-# Rotated INT4 on the Radeon RX 7900 XT
+# Qwen Rotated INT4 on AMD RDNA3
 
 This fork contains the rotated GPTQ INT4 path developed for Qwen3.5-4B, tuned for Qwen3.5-9B, and extended to Qwen3.8-27B. All rates below use one RX 7900 XT, without MTP or speculative decoding.
 
@@ -40,7 +40,7 @@ The active source is the preserved, deployed selection: compact 4-bit group scal
 - [Decode and prefill profiles, sorted by latency](PROFILING.md)
 - [ROCm 7.2 versus 10.1 stock comparison](results/stock-rocm/README.md)
 - [OMP, server and Paseo setup](deployment/README.md)
-- [Full technical paper](papers/ossicle_int4_report.pdf), [source](papers/ossicle_int4_report.tex), figures and earlier drafts in `papers/`
+- [Qwen paper](papers/qwen35_int4_summary.pdf), [source](papers/qwen35_int4_summary.tex), figures and earlier drafts in `papers/`
 
 The paper's 4B/9B results describe the historical builds used for those measurements. The selected 27B source was compiled and validated before publication, including real HTTP inference and OMP/Paseo requests. Publication copies that source unchanged; it does not rerun GPU benchmarks against the live service.
 
@@ -49,3 +49,7 @@ The paper's 4B/9B results describe the historical builds used for those measurem
 `results/` contains commands, environments, samples and evaluation logs. `profiles/` contains readable summaries and latency-sorted CSVs; `archive/` contains compressed raw traces. `experiments/` preserves candidate kernels, scripts, patches, compiler metadata and unsuccessful trials. Those files are research records and are not built by CMake. Their original absolute paths remain intact for provenance. `quantization/` preserves the rotation/GPTQ tools, including the layerwise 27B workflow.
 
 `artifact-origins.json` maps copied artifacts to their local sources. `SHA256SUMS` covers the publication artifacts. Model weights, generated head caches, reference logits, SDKs, datasets, binaries and personal application state are excluded. The head-cache generator and its expected hash are included.
+
+## Additional model support
+
+Also added INT4 acceleration for **Ossicle 4B**, a Qwen3.5-4B fine-tune: **10,934 tokens/s prefill (pp512)**, **10,606 tokens/s prefill (pp2048)** and **200.6 tokens/s decode (tg128)** on the RX 7900 XT. See [section 5 of the Qwen paper](papers/qwen35_int4_summary.tex#L194). The earlier Ossicle case study is preserved as a [work log](papers/ossicle_int4_report.pdf), with its [source](papers/ossicle_int4_report.tex).
