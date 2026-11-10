@@ -1,0 +1,7 @@
+0.02.629.415 I 
+0.02.629.465 I system_info: n_threads = 12 (n_threads_batch = 12) / 12 | ROCm : NO_VMM = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.02.629.527 I perplexity: saving all logits to /home/svt/tuning27b/decode_reference.bin
+0.02.629.531 I perplexity: tokenizing the input ..
+0.02.967.266 I perplexity: tokenization took 337.73 ms
+0.02.967.331 I perplexity: calculating perplexity over 2 chunks, n_ctx=512, batch_size=1, n_seq=1
+0.15.218.066 I perplexity: 12.16 seconds per pass - ETA 0.27.388.670 I Final estimate: PPL = 5.7440 +/- 0.66837

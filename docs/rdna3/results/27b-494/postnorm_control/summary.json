@@ -1,0 +1,21 @@
+{
+  "label": "postnorm_control",
+  "returncode": 0,
+  "elapsed": 15.837463425006717,
+  "peak_vram_bytes": 15749529600,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.21702490332435,
+      "samples_ts": [
+        48.9834,
+        49.2333,
+        49.2158,
+        49.2183,
+        49.2148
+      ],
+      "latency_ms": 2600.726075
+    }
+  ]
+}

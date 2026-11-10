@@ -1,0 +1,20 @@
+{
+  "label": "runtime493_doorbell",
+  "returncode": 0,
+  "elapsed": 13.233703612990212,
+  "peak_vram_bytes": 15699476480,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.31228148374876,
+      "samples_ts": [
+        49.0704,
+        49.3078,
+        49.3123,
+        49.3123
+      ],
+      "latency_ms": 2595.70225
+    }
+  ]
+}

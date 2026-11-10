@@ -1,0 +1,32 @@
+{
+  "label": "final_xs_wn0_pp_quality",
+  "returncode": 0,
+  "elapsed": 14.08423474803567,
+  "peak_vram_bytes": 16299757568,
+  "results": [
+    {
+      "prompt": 512,
+      "gen": 0,
+      "median_ts": 1225.818747025968,
+      "samples_ts": [
+        1088.27,
+        1226.93,
+        1225.82,
+        1224.57
+      ],
+      "latency_ms": 417.680021
+    },
+    {
+      "prompt": 2048,
+      "gen": 0,
+      "median_ts": 1121.8676477475206,
+      "samples_ts": [
+        1122.49,
+        1121.87,
+        1121.88,
+        1121.84
+      ],
+      "latency_ms": 1825.527284
+    }
+  ]
+}

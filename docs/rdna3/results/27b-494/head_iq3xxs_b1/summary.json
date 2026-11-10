@@ -1,0 +1,13 @@
+{
+  "label": "head_iq3xxs_b1",
+  "returncode": 0,
+  "elapsed": 25.110244931012858,
+  "peak_vram_bytes": 15635546112,
+  "metrics": [
+    "Mean PPL(Q)                   :   6.144209 \u00b1   0.739268",
+    "Mean PPL(Q)/PPL(base)         :   1.070794 \u00b1   0.015218",
+    "Mean PPL(Q)-PPL(base)         :   0.406215 \u00b1   0.108811",
+    "Mean    KLD:   0.042609 \u00b1   0.002273",
+    "Same top p: 87.255 \u00b1 1.478 %"
+  ]
+}

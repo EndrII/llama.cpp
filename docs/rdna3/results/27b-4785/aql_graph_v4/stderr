@@ -1,0 +1,21 @@
+AQL_AUDIT enabled
+ggml_cuda_init: found 1 ROCm devices (Total VRAM: 20464 MiB):
+  Device 0: AMD Radeon RX 7900 XT, gfx1100 (0x1100), VMM: no, Wave Size: 32, VRAM: 20464 MiB
+AQL_AUDIT header=0103 type=3 barrier=1 acquire=0 release=0 count=61
+AQL_AUDIT header=0a02 type=2 barrier=0 acquire=1 release=1 count=1
+AQL_AUDIT header=0b02 type=2 barrier=1 acquire=1 release=1 count=32972
+AQL_AUDIT header=0d02 type=2 barrier=1 acquire=2 release=1 count=61
+AQL_AUDIT header=1302 type=2 barrier=1 acquire=1 release=2 count=61
+AQL_AUDIT header=1402 type=2 barrier=0 acquire=2 release=2 count=1
+AQL_AUDIT header=1403 type=3 barrier=0 acquire=2 release=2 count=1
+AQL_AUDIT header=1502 type=2 barrier=1 acquire=2 release=2 count=580
+AQL_AUDIT header=1503 type=3 barrier=1 acquire=2 release=2 count=1440
+AQL_AUDIT header=0103 type=3 barrier=1 acquire=0 release=0 count=61
+AQL_AUDIT header=0a02 type=2 barrier=0 acquire=1 release=1 count=1
+AQL_AUDIT header=0b02 type=2 barrier=1 acquire=1 release=1 count=32972
+AQL_AUDIT header=0d02 type=2 barrier=1 acquire=2 release=1 count=61
+AQL_AUDIT header=1302 type=2 barrier=1 acquire=1 release=2 count=61
+AQL_AUDIT header=1402 type=2 barrier=0 acquire=2 release=2 count=1
+AQL_AUDIT header=1403 type=3 barrier=0 acquire=2 release=2 count=1
+AQL_AUDIT header=1502 type=2 barrier=1 acquire=2 release=2 count=580
+AQL_AUDIT header=1503 type=3 barrier=1 acquire=2 release=2 count=1440

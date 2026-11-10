@@ -1,0 +1,29 @@
+{
+  "command": [
+    "/tmp/claude-1000/-home-svt--config-Claude-scratch-workspaces-117fffdf-33f1-49e9-9021-541b4b295944-da0f735d-531e-47d2-8484-5ba02f97cc28-scratch-2026-10-30-635bae/d13df678-bae8-40d5-990b-0ad25a01fe64/scratchpad/dff/bin_wn/llama-perplexity",
+    "-m",
+    "/mnt/data/work27b/qwen38-27b-rotq4-gptq.gguf",
+    "-ngl",
+    "99",
+    "-t",
+    "12",
+    "-f",
+    "/mnt/data/projects/ossicle-gguf/work/wiki.test.raw",
+    "-c",
+    "512",
+    "-b",
+    "1",
+    "-ub",
+    "1",
+    "--chunks",
+    "2",
+    "--save-all-logits",
+    "/home/svt/tuning27b/decode_reference.bin"
+  ],
+  "env": {
+    "HOME": "/home/svt",
+    "PATH": "/usr/bin:/bin",
+    "HIP_VISIBLE_DEVICES": "0",
+    "LD_LIBRARY_PATH": "/tmp/claude-1000/-home-svt--config-Claude-scratch-workspaces-117fffdf-33f1-49e9-9021-541b4b295944-da0f735d-531e-47d2-8484-5ba02f97cc28-scratch-2026-10-30-635bae/d13df678-bae8-40d5-990b-0ad25a01fe64/scratchpad/dff/bin_wn:/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_devel/lib:/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_core/lib:/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_libraries/lib"
+  }
+}

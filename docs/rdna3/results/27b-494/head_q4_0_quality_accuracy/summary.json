@@ -1,0 +1,13 @@
+{
+  "label": "head_q4_0_quality_accuracy",
+  "returncode": 0,
+  "elapsed": 14.84209104796173,
+  "peak_vram_bytes": 16274276352,
+  "metrics": [
+    "Mean PPL(Q)                   :   5.991727 \u00b1   0.182797",
+    "Mean PPL(Q)/PPL(base)         :   1.018262 \u00b1   0.003441",
+    "Mean PPL(Q)-PPL(base)         :   0.107460 \u00b1   0.020409",
+    "Mean    KLD:   0.025620 \u00b1   0.000907",
+    "Same top p: 93.088 \u00b1 0.324 %"
+  ]
+}

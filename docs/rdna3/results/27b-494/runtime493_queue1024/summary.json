@@ -1,0 +1,20 @@
+{
+  "label": "runtime493_queue1024",
+  "returncode": 0,
+  "elapsed": 13.233601293992251,
+  "peak_vram_bytes": 15695208448,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.28976730021292,
+      "samples_ts": [
+        49.0603,
+        49.2966,
+        49.2898,
+        49.2799
+      ],
+      "latency_ms": 2596.887894
+    }
+  ]
+}

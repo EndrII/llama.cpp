@@ -1,0 +1,83 @@
+[
+  {
+    "label": "fusion_quality_accuracy_smoke",
+    "tool": "llama-perplexity",
+    "env": {
+      "GGML_INT4_PREFILL": "quality"
+    },
+    "args": [
+      "-f",
+      "/mnt/data/projects/ossicle-gguf/work/wiki.test.raw",
+      "-c",
+      "512",
+      "-b",
+      "512",
+      "-ub",
+      "512",
+      "--chunks",
+      "4",
+      "--kl-divergence-base",
+      "/mnt/9100pro/ossicle-work/kld_base_qwen38_27b.bin",
+      "--kl-divergence"
+    ]
+  },
+  {
+    "label": "fusion_decode",
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "5",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "baseline_decode_ab1",
+    "baseline": true,
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "5",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "fusion_prefill_quality",
+    "env": {
+      "GGML_INT4_PREFILL": "quality"
+    },
+    "args": [
+      "-p",
+      "512,2048",
+      "-n",
+      "0",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "fusion_prefill_fast",
+    "env": {
+      "GGML_INT4_PREFILL": "fast"
+    },
+    "args": [
+      "-p",
+      "512,2048",
+      "-n",
+      "0",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  }
+]

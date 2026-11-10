@@ -1,0 +1,21 @@
+{
+  "label": "postnorm_writer_fence",
+  "returncode": 0,
+  "elapsed": 16.08569733198965,
+  "peak_vram_bytes": 15695007744,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 48.37857096242689,
+      "samples_ts": [
+        48.1434,
+        48.3828,
+        48.3845,
+        48.3744,
+        48.3708
+      ],
+      "latency_ms": 2645.7995235
+    }
+  ]
+}

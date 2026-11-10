@@ -1,0 +1,152 @@
+[
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi1ELi8ELi0ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<1, 8, 0, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 95,
+    "threads": 256
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi1ELi8ELi1ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<1, 8, 1, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 85,
+    "threads": 256
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi1ELi10ELi0ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<1, 10, 0, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 95,
+    "threads": 320
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi1ELi10ELi1ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<1, 10, 1, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 85,
+    "threads": 320
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi1ELi4ELi1ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<1, 4, 1, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 85,
+    "threads": 128
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi1ELi6ELi1ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<1, 6, 1, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 85,
+    "threads": 192
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi1ELi10ELi1ELb0EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<1, 10, 1, false>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 101,
+    "threads": 320
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi2ELi8ELi0ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<2, 8, 0, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 112,
+    "threads": 256
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi2ELi8ELi1ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<2, 8, 1, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 116,
+    "threads": 256
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi2ELi10ELi0ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<2, 10, 0, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 112,
+    "threads": 320
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi2ELi10ELi1ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<2, 10, 1, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 116,
+    "threads": 320
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi2ELi8ELi2ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<2, 8, 2, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 108,
+    "threads": 256
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi2ELi10ELi2ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<2, 10, 2, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 108,
+    "threads": 320
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi2ELi4ELi2ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<2, 4, 2, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 108,
+    "threads": 128
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi2ELi6ELi2ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<2, 6, 2, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 108,
+    "threads": 192
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi2ELi10ELi2ELb0EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<2, 10, 2, false>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 123,
+    "threads": 320
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi4ELi8ELi0ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<4, 8, 0, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 157,
+    "threads": 256
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi4ELi8ELi1ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<4, 8, 1, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 168,
+    "threads": 256
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi4ELi10ELi0ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<4, 10, 0, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 157,
+    "threads": 320
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi4ELi10ELi1ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<4, 10, 1, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 168,
+    "threads": 320
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi4ELi8ELi4ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<4, 8, 4, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 148,
+    "threads": 256
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi4ELi10ELi4ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<4, 10, 4, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 148,
+    "threads": 320
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi4ELi4ELi4ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<4, 4, 4, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 148,
+    "threads": 128
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi4ELi6ELi4ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<4, 6, 4, true>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 148,
+    "threads": 192
+  },
+  {
+    "mangled": "_ZN12_GLOBAL__N_113k_mv_rot_rowsILi4ELi10ELi4ELb0EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f",
+    "name": "void (anonymous namespace)::k_mv_rot_rows<4, 10, 4, false>(unsigned char const*, unsigned char const*, float const*, float, float const*, float const*, float*, float const*, int, int, int, float const*, float)",
+    "vgpr": 166,
+    "threads": 320
+  }
+]

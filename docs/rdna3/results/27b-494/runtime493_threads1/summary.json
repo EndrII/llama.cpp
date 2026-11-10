@@ -1,0 +1,32 @@
+{
+  "label": "runtime493_threads1",
+  "returncode": 0,
+  "elapsed": 23.648722070036456,
+  "peak_vram_bytes": 15701520384,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.271742854099884,
+      "samples_ts": [
+        49.0268,
+        49.2717,
+        49.2695,
+        49.3042
+      ],
+      "latency_ms": 2597.83788
+    },
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.31979464692443,
+      "samples_ts": [
+        49.1855,
+        49.3231,
+        49.3198,
+        49.3124
+      ],
+      "latency_ms": 2595.306832
+    }
+  ]
+}

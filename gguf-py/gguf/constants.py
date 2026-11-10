@@ -498,6 +498,9 @@ class Keys:
     class ClipAudio:
         PROJECTOR_TYPE      = "clip.audio.projector_type" # for mixed modality models
         NUM_MEL_BINS        = "clip.audio.num_mel_bins"
+        NO_BOUNDARY_TOKENS  = "clip.audio.no_boundary_tokens"
+        EXACT_FRAME_COUNT   = "clip.audio.exact_frame_count"
+        POLYPHASE_RESAMPLE  = "clip.audio.polyphase_resample"
         EMBEDDING_LENGTH    = "clip.audio.embedding_length"
         FEED_FORWARD_LENGTH = "clip.audio.feed_forward_length"
         PROJECTION_DIM      = "clip.audio.projection_dim"

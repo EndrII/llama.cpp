@@ -1,0 +1,30 @@
+// Opt-in backend extension: keep source storage alive while a decode input
+// transaction uploads its tensors, then synchronize once before graph compute.
+class llama_input_batch_scope {
+    using hook = void (*)();
+    using hooks = std::vector<std::pair<hook, hook>>;
+    const hooks * active = nullptr;
+public:
+    explicit llama_input_batch_scope(bool decode) {
+        static const bool requested = [] { const char * e = std::getenv("GGML_CUDA_BATCH_INPUTS"); return e && std::atoi(e); }();
+        if (!decode || !requested) return;
+        static const hooks available = [] {
+            hooks result;
+            for (size_t i = 0; i < ggml_backend_reg_count(); i++) {
+                const auto reg = ggml_backend_reg_get(i);
+                const auto begin = reinterpret_cast<hook>(ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_input_batch_begin"));
+                const auto end = reinterpret_cast<hook>(ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_input_batch_end"));
+                if (begin && end) result.emplace_back(begin, end);
+            }
+            return result;
+        }();
+        active = &available;
+        for (const auto & h : *active) h.first();
+    }
+    ~llama_input_batch_scope() {
+        if (active) for (auto i = active->rbegin(); i != active->rend(); ++i) i->second();
+    }
+    llama_input_batch_scope(const llama_input_batch_scope &) = delete;
+    llama_input_batch_scope & operator=(const llama_input_batch_scope &) = delete;
+};
+

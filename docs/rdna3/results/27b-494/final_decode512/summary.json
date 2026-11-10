@@ -1,0 +1,19 @@
+{
+  "label": "final_decode512",
+  "returncode": 0,
+  "elapsed": 33.81451980600832,
+  "peak_vram_bytes": 16111484928,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 512,
+      "median_ts": 49.449236697861565,
+      "samples_ts": [
+        49.3713,
+        49.4553,
+        49.4432
+      ],
+      "latency_ms": 10354.0526445
+    }
+  ]
+}

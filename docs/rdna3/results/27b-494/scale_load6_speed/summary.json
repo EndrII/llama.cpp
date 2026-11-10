@@ -1,0 +1,21 @@
+{
+  "label": "scale_load6_speed",
+  "returncode": 0,
+  "elapsed": 15.736434681050014,
+  "peak_vram_bytes": 15793524736,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.27991068385788,
+      "samples_ts": [
+        48.999,
+        49.2884,
+        49.287,
+        49.2729,
+        49.266
+      ],
+      "latency_ms": 2597.407305
+    }
+  ]
+}

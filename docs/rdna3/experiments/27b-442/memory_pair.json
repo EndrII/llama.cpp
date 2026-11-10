@@ -1,0 +1,36 @@
+[
+  {
+    "label": "memory_pair_base",
+    "baseline": true,
+    "env": {
+      "GGML_INT4_PREFILL": "fast"
+    },
+    "args": [
+      "-p",
+      "512,2048",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "memory_pair_final",
+    "baseline": false,
+    "env": {
+      "GGML_INT4_PREFILL": "fast"
+    },
+    "args": [
+      "-p",
+      "512,2048",
+      "-n",
+      "128",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  }
+]

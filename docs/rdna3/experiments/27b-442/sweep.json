@@ -1,0 +1,280 @@
+[
+  {
+    "label": "sweep_gdn_4",
+    "env": {
+      "GGML_MV_GDN_NW": "4"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "3",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_gdn_6",
+    "env": {
+      "GGML_MV_GDN_NW": "6"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "3",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_gdn_8",
+    "env": {
+      "GGML_MV_GDN_NW": "8"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "3",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_gdn_12",
+    "env": {
+      "GGML_MV_GDN_NW": "12"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "3",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_gdn_16",
+    "env": {
+      "GGML_MV_GDN_NW": "16"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "3",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_ffn_4",
+    "env": {
+      "GGML_MV_FFN_NW": "4"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "3",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_ffn_6",
+    "env": {
+      "GGML_MV_FFN_NW": "6"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "3",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_ffn_8",
+    "env": {
+      "GGML_MV_FFN_NW": "8"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "3",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_ffn_12",
+    "env": {
+      "GGML_MV_FFN_NW": "12"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "3",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_ffn_16",
+    "env": {
+      "GGML_MV_FFN_NW": "16"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "3",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_ffn_17",
+    "env": {
+      "GGML_MV_FFN_NW": "17"
+    },
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "3",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_prefill_fast_2",
+    "env": {
+      "GGML_INT4_PREFILL": "fast",
+      "GGML_INT4_WAVES": "2"
+    },
+    "args": [
+      "-p",
+      "512,2048",
+      "-n",
+      "0",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_prefill_fast_4",
+    "env": {
+      "GGML_INT4_PREFILL": "fast",
+      "GGML_INT4_WAVES": "4"
+    },
+    "args": [
+      "-p",
+      "512,2048",
+      "-n",
+      "0",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_prefill_fast_8",
+    "env": {
+      "GGML_INT4_PREFILL": "fast",
+      "GGML_INT4_WAVES": "8"
+    },
+    "args": [
+      "-p",
+      "512,2048",
+      "-n",
+      "0",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_prefill_quality_2",
+    "env": {
+      "GGML_INT4_PREFILL": "quality",
+      "GGML_INT4_WAVES": "2"
+    },
+    "args": [
+      "-p",
+      "512,2048",
+      "-n",
+      "0",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_prefill_quality_4",
+    "env": {
+      "GGML_INT4_PREFILL": "quality",
+      "GGML_INT4_WAVES": "4"
+    },
+    "args": [
+      "-p",
+      "512,2048",
+      "-n",
+      "0",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "sweep_prefill_quality_8",
+    "env": {
+      "GGML_INT4_PREFILL": "quality",
+      "GGML_INT4_WAVES": "8"
+    },
+    "args": [
+      "-p",
+      "512,2048",
+      "-n",
+      "0",
+      "-r",
+      "4",
+      "-o",
+      "json"
+    ]
+  }
+]

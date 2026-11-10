@@ -1,0 +1,106 @@
+[
+  {
+    "label": "confirm_0_base",
+    "baseline": true,
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "5",
+      "-o",
+      "json"
+    ]
+  },
+  {
+    "label": "confirm_0_r2",
+    "baseline": false,
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "5",
+      "-o",
+      "json"
+    ],
+    "env": {
+      "GGML_MV_GDN_ROWS": "2",
+      "GGML_MV_FFN_ROWS": "2",
+      "GGML_MV_ATTN_ROWS": "2"
+    }
+  },
+  {
+    "label": "confirm_0_r4",
+    "baseline": false,
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "5",
+      "-o",
+      "json"
+    ],
+    "env": {
+      "GGML_MV_GDN_ROWS": "4",
+      "GGML_MV_FFN_ROWS": "4",
+      "GGML_MV_ATTN_ROWS": "4"
+    }
+  },
+  {
+    "label": "confirm_1_r4",
+    "baseline": false,
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "5",
+      "-o",
+      "json"
+    ],
+    "env": {
+      "GGML_MV_GDN_ROWS": "4",
+      "GGML_MV_FFN_ROWS": "4",
+      "GGML_MV_ATTN_ROWS": "4"
+    }
+  },
+  {
+    "label": "confirm_1_r2",
+    "baseline": false,
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "5",
+      "-o",
+      "json"
+    ],
+    "env": {
+      "GGML_MV_GDN_ROWS": "2",
+      "GGML_MV_FFN_ROWS": "2",
+      "GGML_MV_ATTN_ROWS": "2"
+    }
+  },
+  {
+    "label": "confirm_1_base",
+    "baseline": true,
+    "args": [
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-r",
+      "5",
+      "-o",
+      "json"
+    ]
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "label": "best_fast_accuracy",
+  "returncode": 0,
+  "elapsed": 10.985212151019368,
+  "peak_vram_bytes": 19013472256,
+  "metrics": [
+    "Mean PPL(Q)                   :   6.195224 \u00b1   0.191518",
+    "Mean PPL(Q)/PPL(base)         :   1.052846 \u00b1   0.005303",
+    "Mean PPL(Q)-PPL(base)         :   0.310957 \u00b1   0.032746",
+    "Mean    KLD:   0.061630 \u00b1   0.002218",
+    "Same top p: 89.608 \u00b1 0.390 %"
+  ]
+}

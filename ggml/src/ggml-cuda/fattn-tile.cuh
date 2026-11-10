@@ -812,7 +812,8 @@ static __global__ void flash_attn_tile(
                             const int32_t nb11, const int32_t nb12, const int64_t nb13,
                             const int32_t nb21, const int32_t nb22, const int64_t nb23,
                             const int32_t ne31, const int32_t ne32, const int32_t ne33,
-                            const int32_t nb31, const int32_t nb32, const int64_t nb33) {
+                            const int32_t nb31, const int32_t nb32, const int64_t nb33,
+                            float * dst_final) {
 #ifdef FLASH_ATTN_AVAILABLE
     const char * GGML_CUDA_RESTRICT Q        = Q_ptr;
     const char * GGML_CUDA_RESTRICT K        = K_ptr;
@@ -1133,6 +1134,65 @@ static __global__ void flash_attn_tile(
             dst_meta[j_dst_unrolled] = make_float2(KQ_max[jc0], KQ_sum[jc0]);
         }
     }
+
+    // in-kernel combine of the split-KV partial results (host sets dst_final when it skips flash_attn_combine_results; one query column, ncols2 heads per block,
+    // at most 32 parallel blocks, DV a multiple of 128).  The last block of a group to arrive combines: one warp per head row, lane l reads the meta of parallel block l,
+    // and each lane then takes DV/32 contiguous outputs, with the loads of all partial results in flight together.
+    if constexpr (ncols1 == 1 && DV % 128 == 0) {
+        if (dst_final != nullptr && gridDim.y > 1) {
+            __shared__ unsigned fold_last;
+            __threadfence();
+            __syncthreads();
+            if (threadIdx.x == 0 && threadIdx.y == 0) {
+                const int group = blockIdx.x + gridDim.x*blockIdx.z;
+                const bool last = atomicAdd(&ggml_fa_fold_ctr[group], 1u) == gridDim.y - 1;
+                if (last) {
+                    ggml_fa_fold_ctr[group] = 0u;
+                }
+                fold_last = last;
+            }
+            __syncthreads();
+            if (fold_last) {
+                __threadfence();    // acquire: the partial results of the other blocks are read with ordinary loads below
+                const int P = gridDim.y;
+                constexpr int NPT = DV / 32;    // outputs per lane
+                for (int c = threadIdx.y; c < ncols2; c += nwarps) {
+                    const int row = (sequence*int(ne01.z) + col_Q_0)*ne02 + head0 + c;
+                    const int b   = row*P;
+                    float mx = -FLT_MAX;
+                    float sl = 0.0f;
+                    if (threadIdx.x < P) {
+                        const float2 mm = dst_meta[b + threadIdx.x];
+                        mx = mm.x;
+                        sl = mm.y;
+                    }
+                    const float kqmax = warp_reduce_max<warp_size>(mx);
+                    const float sc    = threadIdx.x < P ? expf(mx - kqmax) : 0.0f;
+                    const float scsl  = sc*sl;
+                    float den = 0.0f;
+                    float acc[NPT] = {0.0f};
+                    for (int l = 0; l < P; ++l) {
+                        den += __shfl_sync(0xFFFFFFFF, scsl, l, warp_size);
+                    }
+#pragma unroll 4
+                    for (int l = 0; l < P; ++l) {
+                        const float s = __shfl_sync(0xFFFFFFFF, sc, l, warp_size);
+                        const float4 * pp = (const float4 *) (dst + (size_t) (b + l)*DV + threadIdx.x*NPT);
+#pragma unroll
+                        for (int q = 0; q < NPT/4; ++q) {
+                            const float4 v = pp[q];
+                            acc[4*q + 0] += s*v.x; acc[4*q + 1] += s*v.y; acc[4*q + 2] += s*v.z; acc[4*q + 3] += s*v.w;
+                        }
+                    }
+                    float4 * out = (float4 *) (dst_final + (size_t) row*DV + threadIdx.x*NPT);
+#pragma unroll
+                    for (int q = 0; q < NPT/4; ++q) {
+                        out[q] = make_float4(acc[4*q + 0]/den, acc[4*q + 1]/den, acc[4*q + 2]/den, acc[4*q + 3]/den);
+                    }
+                }
+            }
+        }
+    }
 #else
     GGML_UNUSED_VARS(Q_ptr, K_ptr, V_ptr, mask_ptr, sinks_ptr, KV_max_ptr, KV_rows_ptr, dst_ptr, dst_meta_ptr, scale,
         max_bias, m0, m1, n_head_log2, logit_softcap,
@@ -1165,7 +1225,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
             fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, cols_per_block/ncols2, ncols2, use_logit_softcap>;
             launch_fattn<DV, cols_per_block/ncols2, ncols2>
-                (ctx, dst, fattn_kernel, nwarps, nbytes_shared, nbatch_fa, true, true, false, false, warp_size);
+                (ctx, dst, fattn_kernel, nwarps, nbytes_shared, nbatch_fa, true, true, false, false, warp_size, true);
             return;
         }
     }
@@ -1181,7 +1241,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
             fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, cols_per_block/ncols2, ncols2, use_logit_softcap>;
             launch_fattn<DV, cols_per_block/ncols2, ncols2>
-                (ctx, dst, fattn_kernel, nwarps, nbytes_shared, nbatch_fa, true, true, false, false, warp_size);
+                (ctx, dst, fattn_kernel, nwarps, nbytes_shared, nbatch_fa, true, true, false, false, warp_size, true);
             return;
         }
     }
@@ -1193,7 +1253,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
             fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, cols_per_block/ncols2, ncols2, use_logit_softcap>;
             launch_fattn<DV, cols_per_block/ncols2, ncols2>
-                (ctx, dst, fattn_kernel, nwarps, nbytes_shared, nbatch_fa, true, true, false, false, warp_size);
+                (ctx, dst, fattn_kernel, nwarps, nbytes_shared, nbatch_fa, true, true, false, false, warp_size, true);
             return;
         }
     }
@@ -1205,7 +1265,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
             fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, cols_per_block/ncols2, ncols2, use_logit_softcap>;
             launch_fattn<DV, cols_per_block/ncols2, ncols2>
-                (ctx, dst, fattn_kernel, nwarps, nbytes_shared, nbatch_fa, true, true, false, false, warp_size);
+                (ctx, dst, fattn_kernel, nwarps, nbytes_shared, nbatch_fa, true, true, false, false, warp_size, true);
             return;
         }
     }
@@ -1217,7 +1277,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
             fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, cols_per_block/ncols2, ncols2, use_logit_softcap>;
             launch_fattn<DV, cols_per_block/ncols2, ncols2>
-                (ctx, dst, fattn_kernel, nwarps, nbytes_shared, nbatch_fa, true, true, false, false, warp_size);
+                (ctx, dst, fattn_kernel, nwarps, nbytes_shared, nbatch_fa, true, true, false, false, warp_size, true);
             return;
         }
     }
@@ -1228,7 +1288,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
         const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
         fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, cols_per_block/ncols2, ncols2, use_logit_softcap>;
         launch_fattn<DV, cols_per_block/ncols2, ncols2>
-            (ctx, dst, fattn_kernel, nwarps, nbytes_shared, nbatch_fa, true, true, false, false, warp_size);
+            (ctx, dst, fattn_kernel, nwarps, nbytes_shared, nbatch_fa, true, true, false, false, warp_size, true);
         return;
     }
 

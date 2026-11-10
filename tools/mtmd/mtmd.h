@@ -178,6 +178,9 @@ MTMD_API struct mtmd_video_config mtmd_get_video_config(const mtmd_context * ctx
                                                         int32_t src_width, int32_t src_height,
                                                         int32_t src_n_frames, float src_fps);
 
+// returns true if the model asks for polyphase (scipy resample_poly style) resampling of input audio
+MTMD_API bool mtmd_audio_use_polyphase_resample(const mtmd_context * ctx);
+
 // get the current marker string
 MTMD_API const char * mtmd_get_marker(const mtmd_context * ctx);
 

@@ -1,0 +1,31 @@
+{
+  "label": "fusion_prefill_quality",
+  "returncode": 0,
+  "elapsed": 13.930918057973031,
+  "results": [
+    {
+      "prompt": 512,
+      "gen": 0,
+      "median_ts": 1216.8933093615808,
+      "samples_ts": [
+        1080.05,
+        1217.93,
+        1216.89,
+        1215.49
+      ],
+      "latency_ms": 420.743541
+    },
+    {
+      "prompt": 2048,
+      "gen": 0,
+      "median_ts": 1118.0322652221732,
+      "samples_ts": [
+        1117.57,
+        1118.58,
+        1118.03,
+        1117.79
+      ],
+      "latency_ms": 1831.789711
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "label": "fht_spec6",
+  "returncode": 0,
+  "elapsed": 10.729103811027016,
+  "peak_vram_bytes": 15833456640,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 47.43476118071095,
+      "samples_ts": [
+        47.1923,
+        47.4331,
+        47.4364
+      ],
+      "latency_ms": 2698.4430155
+    }
+  ]
+}

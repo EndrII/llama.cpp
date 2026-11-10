@@ -1,0 +1,13 @@
+{
+  "label": "scale8_accuracy2",
+  "returncode": 0,
+  "elapsed": 14.993778884003405,
+  "peak_vram_bytes": 19022692352,
+  "metrics": [
+    "Mean PPL(Q)                   :   5.963880 \u00b1   0.181939",
+    "Mean PPL(Q)/PPL(base)         :   1.013530 \u00b1   0.002857",
+    "Mean PPL(Q)-PPL(base)         :   0.079613 \u00b1   0.016942",
+    "Mean    KLD:   0.018356 \u00b1   0.000702",
+    "Same top p: 94.248 \u00b1 0.298 %"
+  ]
+}

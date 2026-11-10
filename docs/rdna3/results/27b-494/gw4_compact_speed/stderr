@@ -1,0 +1,6 @@
+ggml_cuda_init: found 1 ROCm devices (Total VRAM: 20464 MiB):
+  Device 0: AMD Radeon RX 7900 XT, gfx1100 (0x1100), VMM: no, Wave Size: 32, VRAM: 20464 MiB
+/tmp/claude-1000/-home-svt--config-Claude-scratch-workspaces-117fffdf-33f1-49e9-9021-541b4b295944-da0f735d-531e-47d2-8484-5ba02f97cc28-scratch-2026-10-30-635bae/d13df678-bae8-40d5-990b-0ad25a01fe64/scratchpad/dff/src/ggml/src/ggml-cuda/int4-wmma.cu:1127: GGML_ASSERT(w.gw == 4) failed
+warning: 30	../sysdeps/unix/sysv/linux/wait4.c: No such file or directory
+warning: 58	../sysdeps/nptl/libc_start_call_main.h: No such file or directory
+warning: 360	../csu/libc-start.c: No such file or directory

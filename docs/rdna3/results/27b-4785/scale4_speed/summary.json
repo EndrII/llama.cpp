@@ -1,0 +1,32 @@
+{
+  "label": "scale4_speed",
+  "returncode": 0,
+  "elapsed": 15.737094976007938,
+  "peak_vram_bytes": 16140378112,
+  "results": [
+    {
+      "prompt": 512,
+      "gen": 0,
+      "median_ts": 1227.8516898663809,
+      "samples_ts": [
+        1086.81,
+        1228.09,
+        1227.85,
+        1226.31
+      ],
+      "latency_ms": 416.988472
+    },
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 47.050952424015556,
+      "samples_ts": [
+        46.9417,
+        47.0597,
+        47.051,
+        47.0353
+      ],
+      "latency_ms": 2720.455026
+    }
+  ]
+}

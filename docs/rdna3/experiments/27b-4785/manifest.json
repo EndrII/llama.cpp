@@ -1,0 +1,14 @@
+{
+  "status": "checkpoint; 50+ target unmet",
+  "selected": "max4_nt",
+  "source": "/home/svt/tuning27b50/src/int4-wmma.cu",
+  "source_sha256": "5e051c5d6ee54fd38553494c576a5b4799ddd01f2bb573e89588fa6694047148",
+  "library_sha256": "ff2a349bf9f6496be9b267463ee3a52a9a98d37040a18cbd5490aec287b2624a",
+  "baseline": "/home/svt/tuning27b",
+  "model": "/mnt/data/work27b/qwen38-27b-rotq4-gptq.gguf",
+  "mtp": false,
+  "speculative_decode": false,
+  "validated_models": [
+    "27B only"
+  ]
+}

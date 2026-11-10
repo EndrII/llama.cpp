@@ -1,0 +1,18 @@
+{
+  "label": "sweep_ffn_8",
+  "returncode": 0,
+  "elapsed": 11.630058455979452,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 42.63856834047383,
+      "samples_ts": [
+        42.481,
+        42.6375,
+        42.6396
+      ],
+      "latency_ms": 3001.9769655
+    }
+  ]
+}

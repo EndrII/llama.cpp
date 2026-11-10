@@ -1,0 +1,20 @@
+{
+  "label": "iq_control",
+  "returncode": 0,
+  "elapsed": 13.233288514020387,
+  "peak_vram_bytes": 15749578752,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.12291871024165,
+      "samples_ts": [
+        48.8677,
+        49.122,
+        49.1229,
+        49.1248
+      ],
+      "latency_ms": 2605.708361
+    }
+  ]
+}

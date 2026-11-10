@@ -1245,6 +1245,12 @@ struct mtmd_context {
                 throw std::runtime_error(string_format("%s: unexpected audio projector type %d\n", __func__, proj));
         }
 
+        // some models were trained without the begin/end tokens around the audio embeddings
+        if (clip_get_hparams(ctx_a)->audio_no_boundary_tokens) {
+            aud_beg.clear();
+            aud_end.clear();
+        }
+
         // initialize audio preprocessor
         if (audio_preproc) {
             audio_preproc->mel_config.n_threads = n_threads;
@@ -3293,6 +3299,10 @@ bool mtmd_support_vision(const mtmd_context * ctx) {
 
 bool mtmd_support_audio(const mtmd_context * ctx) {
     return ctx->ctx_a != nullptr;
+}
+
+bool mtmd_audio_use_polyphase_resample(const mtmd_context * ctx) {
+    return ctx->ctx_a && clip_get_hparams(ctx->ctx_a)->audio_polyphase_resample;
 }
 
 int mtmd_get_audio_sample_rate(const mtmd_context * ctx) {

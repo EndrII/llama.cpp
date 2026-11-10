@@ -1,0 +1,20 @@
+{
+  "label": "runtime493_batch16",
+  "returncode": 0,
+  "elapsed": 13.232464468979742,
+  "peak_vram_bytes": 15680552960,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.28075065893186,
+      "samples_ts": [
+        49.041,
+        49.2808,
+        49.2894,
+        49.2783
+      ],
+      "latency_ms": 2597.363033
+    }
+  ]
+}
