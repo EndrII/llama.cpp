@@ -542,12 +542,14 @@ llama_kv_cache::llama_kv_cache(
             hparams.n_embd_head_v() % 64 == 0;
 
         if (attn_rot_k) {
-            // TurboQuant: smallest rotation tile (nrot=64) by default when K
-            // rotation is enabled (mirrors V's choice); set
-            // LLAMA_ATTN_ROT_K_NROT=0 to get master's largest power-of-2 tile.
+            // TurboQuant: opt into the smallest rotation tile (nrot=64) with
+            // LLAMA_ATTN_ROT_K_NROT=64 (mirrors V's choice). Default is master's
+            // largest power-of-2 tile, which LID (lightning indexer) models
+            // require to cover the full indexer head size (64-tile crashes the
+            // indexer_q rotation matmul for clover_moe/deepseek32 etc.).
             // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4141323088
             const char * env_k_nrot = getenv("LLAMA_ATTN_ROT_K_NROT");
-            const int nrot = env_k_nrot ? atoi(env_k_nrot) : 64;
+            const int nrot = env_k_nrot ? atoi(env_k_nrot) : 0;
             if (nrot == 0) {
                 n_rot_k = 64;
                 while (n_embd_head_k_all % (2*n_rot_k) == 0) {
