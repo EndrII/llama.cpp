@@ -866,7 +866,6 @@ static bool ggml_tq_convert_q8() {
     }
     return val == 1;
 }
-}
 
 static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
@@ -1129,7 +1128,6 @@ static size_t ggml_backend_cuda_buffer_type_get_alloc_size(ggml_backend_buffer_t
         : ggml_nbytes(tensor);
     int64_t ne0 = tensor->ne[0];
 
-======
     // TQ4_1S → q8_0 load-time conversion: allocate q8_0-sized space if opted in
     if (ggml_tq_convert_q8() && tensor->type == GGML_TYPE_TQ4_1S) {
         // q8_0 block: 34 bytes per 32 elements. TQ4_1S block: 20 bytes per 32 elements.

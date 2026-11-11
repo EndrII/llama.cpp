@@ -10932,7 +10932,6 @@ void ggml_vk_set_rows(ggml_backend_vk_context * ctx, vk_context& subctx, const g
     });
 }
 
-======
 static void ggml_vk_turbo_wht(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, ggml_tensor * dst) {
     int direction, group_size;
     memcpy(&direction, dst->op_params + 0, sizeof(int));
@@ -15829,7 +15828,6 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     case GGML_TYPE_Q4_0:
                     case GGML_TYPE_IQ4_NL:
                         return true;
-======
                     case GGML_TYPE_TURBO2_0:
                     case GGML_TYPE_TURBO3_0:
                     case GGML_TYPE_TURBO4_0:
