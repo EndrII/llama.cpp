@@ -1246,7 +1246,7 @@ struct mtmd_context {
         }
 
         // some models were trained without the begin/end tokens around the audio embeddings
-        if (clip_get_hparams(ctx_a)->audio_no_boundary_tokens) {
+        if (ctx_a->model.hparams.audio_no_boundary_tokens) {
             aud_beg.clear();
             aud_end.clear();
         }
@@ -3302,7 +3302,7 @@ bool mtmd_support_audio(const mtmd_context * ctx) {
 }
 
 bool mtmd_audio_use_polyphase_resample(const mtmd_context * ctx) {
-    return ctx->ctx_a && clip_get_hparams(ctx->ctx_a)->audio_polyphase_resample;
+    return ctx->ctx_a && ctx->ctx_a->model.hparams.audio_polyphase_resample;
 }
 
 int mtmd_get_audio_sample_rate(const mtmd_context * ctx) {

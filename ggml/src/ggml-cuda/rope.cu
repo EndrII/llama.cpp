@@ -830,7 +830,7 @@ bool ggml_cuda_op_attn_prep(ggml_backend_cuda_context & ctx, bool launch,
     memcpy(&a.attn_factor, op + 8, sizeof(float)); memcpy(&beta_fast, op + 9, sizeof(float)); memcpy(&beta_slow, op + 10, sizeof(float));
     memcpy(&a.sections.v, op + 11, sizeof(int) * 4);
     a.is_imrope = mode == GGML_ROPE_TYPE_IMROPE;
-    ggml_rope_yarn_corr_dims(a.n_dims, n_ctx_orig, freq_base, beta_fast, beta_slow, a.corr_dims.v);
+    ggml_rope_yarn_corr_dims(a.n_dims, n_ctx_orig, freq_base, beta_fast, beta_slow, ggml_rope_get_truncate(rope_q), a.corr_dims.v);
     a.theta_scale = powf(freq_base, -2.0f / a.n_dims);
     GGML_ASSERT(a.sections.v[0] > 0 || a.sections.v[1] > 0 || a.sections.v[2] > 0);
     k_attn_prep<<<(unsigned) (nq + nk), 256, 0, ctx.stream()>>>(a);
