@@ -101,40 +101,8 @@ layout (binding = 7) readonly buffer SP {int32_t data_sparse[];};
 #define O_TYPE FLOAT_TYPE
 #define O_TYPEV4 FLOAT_TYPEV4
 #endif
-// Number of matrix elements per buffer block, derived from the K/V type spec
-// constant. F32 is treated as a vec4 "block" of 4 floats. F16 uses block size 1
-// and bypasses the dequant path entirely. Quants follow their ggml block sizes.
-uint fa_block_elems(uint ty) {
-    switch (ty) {
-        case FA_TYPE_F32:  return 4u;
-        case FA_TYPE_F16:  return 1u;
-        case FA_TYPE_Q4_0: return uint(QUANT_K_Q4_0);
-        case FA_TYPE_Q4_1: return uint(QUANT_K_Q4_1);
-        case FA_TYPE_Q5_0: return uint(QUANT_K_Q5_0);
-        case FA_TYPE_Q5_1: return uint(QUANT_K_Q5_1);
-        case FA_TYPE_Q8_0: return uint(QUANT_K_Q8_0);
-        case FA_TYPE_Q1_0: return uint(QUANT_K_Q1_0); // cm2-only, harmless elsewhere
-        case 42u:          return uint(QUANT_K_TURBO2_0); // GGML_TYPE_TURBO2_0
-        case 43u:          return uint(QUANT_K_TURBO3_0); // GGML_TYPE_TURBO3_0
-        case 44u:          return uint(QUANT_K_TURBO4_0); // GGML_TYPE_TURBO4_0
-        default:           return 1u;
-    }
-}
-
-// QUANT_R_MMQ for FA-eligible K types. Q4_*/Q5_* store two nibbles per byte
-// (R==2); Q8_0 stores one byte per element (R==1). Used to derive the number
-// of int32s per 32-element block on the MMQ K path: ints_per_block == 8 / R.
-uint fa_quant_r_mmq(uint ty) {
-    switch (ty) {
-        case FA_TYPE_Q4_0: return uint(QUANT_R_Q4_0);
-        case FA_TYPE_Q4_1: return uint(QUANT_R_Q4_1);
-        case FA_TYPE_Q5_0: return uint(QUANT_R_Q5_0);
-        case FA_TYPE_Q5_1: return uint(QUANT_R_Q5_1);
-        case FA_TYPE_Q8_0: return uint(QUANT_R_Q8_0);
-        default:           return 1u;
-    }
-}
-
+// fa_block_elems / fa_quant_r_mmq / fa_type_needs_shmem live in fa_types.glsl
+// (included above), shared with the other FA-family shaders.
 // These can't be `const` globals because GLSL forbids function calls in global
 // const initializers, even when the spec constants would let the driver fold
 // them. Macros expand at the use site and fold after specialization.
