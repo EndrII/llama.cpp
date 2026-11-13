@@ -1,0 +1,207 @@
+--- a/ggml/src/ggml-cuda/int4-wmma.cu
++++ b/ggml/src/ggml-cuda/int4-wmma.cu
+@@ -49,6 +49,10 @@
+ #define INT4W_RSRC(p) __builtin_amdgcn_make_buffer_rsrc((void *)(p), 0, 0x7fffffff, 0x31004000)
+ __device__ __forceinline__ int4v bl128(__amdgpu_buffer_rsrc_t r, int voff, int soff) { return __builtin_amdgcn_raw_buffer_load_b128(r, voff, soff, 0); }
+ __device__ __forceinline__ int2v bl64(__amdgpu_buffer_rsrc_t r, int voff, int soff) { return __builtin_amdgcn_raw_buffer_load_b64(r, voff, soff, 0); }
++__device__ __forceinline__ uint4 nt128(const uint8_t * p, size_t offset) {
++    const int4v v = __builtin_amdgcn_raw_buffer_load_b128(INT4W_RSRC(p), (int) offset, 0, 6);
++    return make_uint4(v.x, v.y, v.z, v.w);
++}
+ #define INT4W_LO(v) __builtin_shufflevector((v), (v), 0, 1)
+ #define INT4W_HI(v) __builtin_shufflevector((v), (v), 2, 3)
+ __device__ __forceinline__ void mul24a(int & out, int a, int b) { asm volatile("v_mul_i32_i24 %0, %1, %2" : "=v"(out) : "v"(a), "v"(b)); }
+@@ -63,11 +67,11 @@
+ __device__ __forceinline__ _Float16 h16(int r, int c) { return (__builtin_popcount(r & c) & 1) ? (_Float16) -1.0f : (_Float16) 1.0f; }
+ 
+ // ---------------------------------------------------------------------------------------------------------------- weight repack
+-__global__ void k_row_scale(const block_q4_0 * __restrict__ W, int M, int nb, float * __restrict__ S) {
++__global__ void k_row_scale(const block_q4_0 * __restrict__ W, int M, int nb, float * __restrict__ S, int sh) {
+     const int m = blockIdx.x * blockDim.x + threadIdx.x; if (m >= M) return;
+     float mx = 0.f;
+     for (int b = 0; b < nb; b++) mx = fmaxf(mx, fabsf(__half2float(W[(size_t) m * nb + b].d)));
+-    S[m] = mx;
++    S[m] = mx * ((float) (1 << sh) / 15.f);
+ }
+ // scale-group size of a Q4_0 tensor: bit0 set if some aligned pair of 32-groups has different scales, bit1 if some aligned quad does
+ __global__ void k_detect_gw(const block_q4_0 * __restrict__ W, int M, int nb, int * __restrict__ flags) {
+@@ -104,7 +108,12 @@
+         }
+     *(uint4 *) (Wp + ((size_t) ((ft * nsb + sb) * 8 + g)) * 256 + r * 16) = make_uint4(w[0], w[1], w[2], w[3]);
+     const float s = S[m] > 0.f ? S[m] : 1.f;
+-    ((uint16_t *) (Wh + ((size_t) ((ft * nsb + sb) * 16 + r)) * 16))[g] = (uint16_t) lrintf(fabsf(d) / s * (float) (1 << sh));
++    if ((g & 1) == 0) {
++        const float d1 = fabsf(__half2float(W[(size_t) m * nb + sb * 8 + g + 1].d));
++        const int q0 = min(15, max(0, (int) lrintf(fabsf(d) / s * (float) (1 << sh))));
++        const int q1 = min(15, max(0, (int) lrintf(d1 / s * (float) (1 << sh))));
++        Wh[((size_t) ((ft * nsb + sb) * 16 + r)) * 4 + g / 2] = q0 | (q1 << 4);
++    }
+ }
+ 
+ // wave32 butterfly reductions on DPP / permlanex16 (a few cycles each) instead of ds_bpermute (__shfl_xor), whose latency dominated the
+@@ -333,11 +342,11 @@
+             for (int i = 0; i < 8; i++) itot[a][b][i] = 0;
+ 
+     for (int sb = 0; sb < nsb; sb++) {
+-        uint32_t scw[MI][4];
++        uint32_t scw[MI][1];
+ #pragma unroll
+         for (int mi = 0; mi < MI; mi++) {
+-            const int4v h0 = bl128(rWh, lc * 16, (((ft0 + mi) * nsb + sb) * 16) * 16);
+-            scw[mi][0] = h0.x; scw[mi][1] = h0.y; scw[mi][2] = h0.z; scw[mi][3] = h0.w;
++            const uint32_t h0 = *(const uint32_t *) (Wh + (((ft0 + mi) * nsb + sb) * 16 + lc) * 4);
++            scw[mi][0] = h0;
+         }
+         int2v mmw[NJ];
+ #pragma unroll
+@@ -400,7 +409,7 @@
+ #pragma unroll
+                 for (int mi = 0; mi < MI; mi++) {
+                     const int g = (u0 + uc) * GW;
+-                    const int scg = (int) ((scw[mi][g >> 1] >> (16 * (g & 1))) & 0xFFFF);
++                    const int scg = (int) ((scw[mi][0] >> (4 * g)) & 0xF);
+ #pragma unroll
+                     for (int nj = 0; nj < NJ; nj++)
+ #pragma unroll
+@@ -514,11 +523,11 @@
+             for (int i = 0; i < 8; i++) tot[a][b][i] = 0.f;
+ 
+     for (int sb = 0; sb < nsb; sb++) {
+-        uint32_t scw[MI][4];
++        uint32_t scw[MI][1];
+ #pragma unroll
+         for (int mi = 0; mi < MI; mi++) {
+-            const int4v h0 = bl128(rWh, lc * 16, (((ft0 + mi) * nsb + sb) * 16) * 16);
+-            scw[mi][0] = h0.x; scw[mi][1] = h0.y; scw[mi][2] = h0.z; scw[mi][3] = h0.w;
++            const uint32_t h0 = *(const uint32_t *) (Wh + (((ft0 + mi) * nsb + sb) * 16 + lc) * 4);
++            scw[mi][0] = h0;
+         }
+         int2v mmw[NJ];
+ #pragma unroll
+@@ -571,7 +580,7 @@
+             __builtin_amdgcn_sched_barrier(0);
+ #pragma unroll
+             for (int mi = 0; mi < MI; mi++) {
+-                const int scg = (int) ((scw[mi][u >> 1] >> (16 * (u & 1))) & 0xFFFF);
++                const int scg = (int) ((scw[mi][0] >> (4 * u)) & 0xF);
+ #pragma unroll
+                 for (int nj = 0; nj < NJ; nj++)
+ #pragma unroll
+@@ -638,11 +647,11 @@
+             for (int i = 0; i < 8; i++) tot[a][b][i] = 0.f;
+ 
+     for (int sb = 0; sb < nsb; sb++) {
+-        uint32_t scw[MI][4];
++        uint32_t scw[MI][1];
+ #pragma unroll
+         for (int mi = 0; mi < MI; mi++) {
+-            const int4v h0 = bl128(rWh, lc * 16, (((ft0 + mi) * nsb + sb) * 16) * 16);
+-            scw[mi][0] = h0.x; scw[mi][1] = h0.y; scw[mi][2] = h0.z; scw[mi][3] = h0.w;
++            const uint32_t h0 = *(const uint32_t *) (Wh + (((ft0 + mi) * nsb + sb) * 16 + lc) * 4);
++            scw[mi][0] = h0;
+         }
+         int2v mmw[NJ];
+ #pragma unroll
+@@ -697,7 +706,7 @@
+             __builtin_amdgcn_sched_barrier(0);
+ #pragma unroll
+             for (int mi = 0; mi < MI; mi++) {
+-                const int scg = (int) ((scw[mi][u0 >> 1] >> (16 * (u0 & 1))) & 0xFFFF);
++                const int scg = (int) ((scw[mi][0] >> (4 * u0)) & 0xF);
+ #pragma unroll
+                 for (int nj = 0; nj < NJ; nj++)
+ #pragma unroll
+@@ -849,16 +858,16 @@
+ #pragma unroll
+     for (int j = 0; j < NC; j++) { acc[j] = 0.f; accg[j] = 0.f; }
+     for (int sb = wv; sb < nsb; sb += MV_NW) {
+-        const size_t wo = ((size_t) (ft * nsb + sb) * 8 + h * 4) * 256 + r * 16, so = ((size_t) (ft * nsb + sb) * 16 + r) * 16 + h * 8;
++        const size_t wo = ((size_t) (ft * nsb + sb) * 8 + h * 4) * 256 + r * 16, so = ((size_t) (ft * nsb + sb) * 16 + r) * 4 + h * 2;
+         uint4 w[4], wg[4];
+ #pragma unroll
+-        for (int g = 0; g < 4; g++) w[g] = *(const uint4 *) (Wp + wo + g * 256);
+-        const uint2 sc = *(const uint2 *) (Wh + so);
+-        uint2 scg = make_uint2(0, 0);
++        for (int g = 0; g < 4; g++) w[g] = nt128(Wp, wo + g * 256);
++        const uint32_t sc = *(const uint16_t *) (Wh + so);
++        uint32_t scg = 0;
+         if (GATE) {
+ #pragma unroll
+-            for (int g = 0; g < 4; g++) wg[g] = *(const uint4 *) (Wp2 + wo + g * 256);
+-            scg = *(const uint2 *) (Wh2 + so);
++            for (int g = 0; g < 4; g++) wg[g] = nt128(Wp2, wo + g * 256);
++            scg = *(const uint16_t *) (Wh2 + so);
+         }
+ #pragma unroll
+         for (int j = 0; j < NC; j++) {
+@@ -886,8 +895,8 @@
+                     si = sdot4((int) ((ww[wi] & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2 * wi], si);
+                     si = sdot4((int) (((ww[wi] >> 4) & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2 * wi + 1], si);
+                 }
+-                const uint32_t sw = g < 2 ? sc.x : sc.y;
+-                acc[j] += (float) ((sw >> (16 * (g & 1))) & 0xFFFF) * (ds.x * (float) si - 8.f * ds.y);
++                const uint32_t sw = sc;
++                acc[j] += (float) ((sw >> (4 * g)) & 0xF) * (ds.x * (float) si - 8.f * ds.y);
+                 if (GATE) {
+                     const uint32_t wwg[4] = {wg[g].x, wg[g].y, wg[g].z, wg[g].w};
+                     int sg = 0;
+@@ -896,8 +905,8 @@
+                         sg = sdot4((int) ((wwg[wi] & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2 * wi], sg);
+                         sg = sdot4((int) (((wwg[wi] >> 4) & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2 * wi + 1], sg);
+                     }
+-                    const uint32_t swg = g < 2 ? scg.x : scg.y;
+-                    accg[j] += (float) ((swg >> (16 * (g & 1))) & 0xFFFF) * (ds.x * (float) sg - 8.f * ds.y);
++                    const uint32_t swg = scg;
++                    accg[j] += (float) ((swg >> (4 * g)) & 0xF) * (ds.x * (float) sg - 8.f * ds.y);
+                 }
+             }
+         }
+@@ -1019,7 +1028,7 @@
+         w.Wh = (uint8_t *) src0->data + (size_t) M * K / 2;     // M*K/2 + M*nsb*16 == M*K/32*18 == ggml_nbytes(src0)
+     } else {
+         CUDA_CHECK(cudaMalloc((void **) &w.Wp, (size_t) M * K / 2));
+-        CUDA_CHECK(cudaMalloc((void **) &w.Wh, (size_t) M * nsb * 16));
++        CUDA_CHECK(cudaMalloc((void **) &w.Wh, (size_t) M * nsb * 4));
+     }
+     CUDA_CHECK(cudaMalloc((void **) &w.S, (size_t) M * sizeof(float)));
+     {
+@@ -1029,7 +1038,7 @@
+         CUDA_CHECK(cudaFree(flags));
+         if (f & 1) w.gw = 1; else if (f & 2) w.gw = 2; else w.gw = 4;
+     }
+-    k_row_scale<<<(M + 127) / 128, 128, 0, stream>>>((const block_q4_0 *) src, M, K / 32, w.S);
++    k_row_scale<<<(M + 127) / 128, 128, 0, stream>>>((const block_q4_0 *) src, M, K / 32, w.S, sh);
+     k_repack<<<dim3(M, nsb), 8, 0, stream>>>((const block_q4_0 *) src, K, nsb, w.S, w.Wp, w.Wh, sh);
+     CUDA_CHECK(cudaGetLastError());
+     if (ip) { CUDA_CHECK(cudaStreamSynchronize(stream)); CUDA_CHECK(cudaFree(tmp)); }
+@@ -1090,14 +1099,14 @@
+     }
+     for (int sb = wv; sb < nsb; sb += NW) {
+         uint4 weights[ROWS][4];
+-        uint2 subscales[ROWS];
++        uint32_t subscales[ROWS];
+ #pragma unroll
+         for (int ri = 0; ri < ROWS; ri++) {
+             const size_t wo = ((size_t) ((ft0 + ri) * nsb + sb) * 8 + h * 4) * 256 + r * 16;
+-            const size_t so = ((size_t) ((ft0 + ri) * nsb + sb) * 16 + r) * 16 + h * 8;
+-#pragma unroll
+-            for (int g = 0; g < 4; g++) { weights[ri][g] = *(const uint4 *) (Wp + wo + g * 256); }
+-            subscales[ri] = *(const uint2 *) (Wh + so);
++            const size_t so = ((size_t) ((ft0 + ri) * nsb + sb) * 16 + r) * 4 + h * 2;
++#pragma unroll
++            for (int g = 0; g < 4; g++) { weights[ri][g] = nt128(Wp, wo + g * 256); }
++            subscales[ri] = *(const uint16_t *) (Wh + so);
+         }
+         const float8v wr = rotate_block(X + sb * 256, lane, rb1, ra2, Y ? Y + (size_t) sb * ystride : nullptr, mode, norm, eps);
+         quant_rot8(wr, lane, &rq[wv][0], &rd[wv][0]);
+@@ -1123,8 +1132,8 @@
+                     si = sdot4((int) ((ww[wi] & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2*wi], si);
+                     si = sdot4((int) (((ww[wi] >> 4) & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2*wi+1], si);
+                 }
+-                const uint32_t sw = g < 2 ? subscales[ri].x : subscales[ri].y;
+-                acc[ri] += (float) ((sw >> (16 * (g & 1))) & 0xFFFF) * (ds.x * (float) si - 8.f * ds.y);
++                const uint32_t sw = subscales[ri];
++                acc[ri] += (float) ((sw >> (4 * g)) & 0xF) * (ds.x * (float) si - 8.f * ds.y);
+             }
+         }
+     }

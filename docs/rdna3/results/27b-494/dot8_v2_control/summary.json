@@ -1,0 +1,20 @@
+{
+  "label": "dot8_v2_control",
+  "returncode": 0,
+  "elapsed": 13.23228597000707,
+  "peak_vram_bytes": 15768596480,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.23831767318449,
+      "samples_ts": [
+        48.9924,
+        49.2383,
+        49.2429,
+        49.237
+      ],
+      "latency_ms": 2599.601409
+    }
+  ]
+}

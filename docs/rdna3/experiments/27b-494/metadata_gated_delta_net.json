@@ -1,0 +1,261 @@
+[
+  {
+    "name": "(anonymous namespace)::gdn_chunk_prep(float const*, float const*, float const*, float const*, float const*, _Float16*, float*, _Float16*, _Float16*, _Float16*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>)",
+    "vgpr": 242,
+    "sgpr": 62,
+    "scratch": 0,
+    "lds": 62208
+  },
+  {
+    "name": "void (anonymous namespace)::gdn_chunk_scan<1, true>(_Float16 const*, float const*, _Float16 const*, _Float16 const*, _Float16 const*, float const*, float const*, float*, float*, long, long, long, float)",
+    "vgpr": 206,
+    "sgpr": 42,
+    "scratch": 0,
+    "lds": 22016
+  },
+  {
+    "name": "void (anonymous namespace)::gdn_chunk_scan<1, false>(_Float16 const*, float const*, _Float16 const*, _Float16 const*, _Float16 const*, float const*, float const*, float*, float*, long, long, long, float)",
+    "vgpr": 211,
+    "sgpr": 42,
+    "scratch": 0,
+    "lds": 11008
+  },
+  {
+    "name": "void (anonymous namespace)::gdn_chunk_scan<2, true>(_Float16 const*, float const*, _Float16 const*, _Float16 const*, _Float16 const*, float const*, float const*, float*, float*, long, long, long, float)",
+    "vgpr": 192,
+    "sgpr": 47,
+    "scratch": 0,
+    "lds": 44032
+  },
+  {
+    "name": "void (anonymous namespace)::gdn_chunk_scan<2, false>(_Float16 const*, float const*, _Float16 const*, _Float16 const*, _Float16 const*, float const*, float const*, float*, float*, long, long, long, float)",
+    "vgpr": 229,
+    "sgpr": 47,
+    "scratch": 0,
+    "lds": 22016
+  },
+  {
+    "name": "void gated_delta_net_cuda<16, true, true>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 25,
+    "sgpr": 56,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<32, true, true>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 26,
+    "sgpr": 56,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<64, true, true>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 28,
+    "sgpr": 56,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<128, true, true>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 42,
+    "sgpr": 56,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<16, true, false>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 25,
+    "sgpr": 55,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<32, true, false>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 26,
+    "sgpr": 55,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<64, true, false>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 31,
+    "sgpr": 60,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<128, true, false>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 36,
+    "sgpr": 56,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<16, false, true>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 24,
+    "sgpr": 56,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<32, false, true>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 25,
+    "sgpr": 56,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<64, false, true>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 28,
+    "sgpr": 56,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cols<true, true, 8>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 219,
+    "sgpr": 68,
+    "scratch": 0,
+    "lds": 16480
+  },
+  {
+    "name": "void gated_delta_net_cols<true, false, 8>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 214,
+    "sgpr": 64,
+    "scratch": 0,
+    "lds": 8224
+  },
+  {
+    "name": "void gated_delta_net_cols<true, true, 16>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 219,
+    "sgpr": 68,
+    "scratch": 0,
+    "lds": 16480
+  },
+  {
+    "name": "void gated_delta_net_cols<true, false, 16>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 213,
+    "sgpr": 64,
+    "scratch": 0,
+    "lds": 8224
+  },
+  {
+    "name": "void gated_delta_net_cols<true, true, 32>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 230,
+    "sgpr": 68,
+    "scratch": 0,
+    "lds": 16480
+  },
+  {
+    "name": "void gated_delta_net_cols<true, false, 32>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 224,
+    "sgpr": 64,
+    "scratch": 0,
+    "lds": 8224
+  },
+  {
+    "name": "void gated_delta_net_cols<true, true, 0>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 220,
+    "sgpr": 68,
+    "scratch": 0,
+    "lds": 16480
+  },
+  {
+    "name": "void gated_delta_net_cols<true, false, 0>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 214,
+    "sgpr": 64,
+    "scratch": 0,
+    "lds": 8224
+  },
+  {
+    "name": "void gated_delta_net_cuda<128, false, true>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 38,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<16, false, false>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 24,
+    "sgpr": 55,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<32, false, false>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 25,
+    "sgpr": 55,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cuda<64, false, false>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 26,
+    "sgpr": 54,
+    "scratch": 0,
+    "lds": 0
+  },
+  {
+    "name": "void gated_delta_net_cols<false, true, 8>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 220,
+    "sgpr": 68,
+    "scratch": 0,
+    "lds": 16480
+  },
+  {
+    "name": "void gated_delta_net_cols<false, false, 8>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 217,
+    "sgpr": 64,
+    "scratch": 0,
+    "lds": 8224
+  },
+  {
+    "name": "void gated_delta_net_cols<false, true, 16>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 223,
+    "sgpr": 68,
+    "scratch": 0,
+    "lds": 16480
+  },
+  {
+    "name": "void gated_delta_net_cols<false, false, 16>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 217,
+    "sgpr": 64,
+    "scratch": 0,
+    "lds": 8224
+  },
+  {
+    "name": "void gated_delta_net_cols<false, true, 32>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 223,
+    "sgpr": 68,
+    "scratch": 0,
+    "lds": 16480
+  },
+  {
+    "name": "void gated_delta_net_cols<false, false, 32>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 217,
+    "sgpr": 64,
+    "scratch": 0,
+    "lds": 8224
+  },
+  {
+    "name": "void gated_delta_net_cols<false, true, 0>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 217,
+    "sgpr": 68,
+    "scratch": 0,
+    "lds": 16480
+  },
+  {
+    "name": "void gated_delta_net_cols<false, false, 0>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int, float const*, int const*, long, float, gdn_ab_args, gdn_out_args)",
+    "vgpr": 215,
+    "sgpr": 64,
+    "scratch": 0,
+    "lds": 8224
+  },
+  {
+    "name": "void gated_delta_net_cuda<128, false, false>(float const*, float const*, float const*, float const*, float const*, float const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, long, int)",
+    "vgpr": 32,
+    "sgpr": 56,
+    "scratch": 0,
+    "lds": 0
+  }
+]

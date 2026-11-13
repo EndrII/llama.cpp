@@ -1,0 +1,6 @@
+CUs=42 regs/block=196608 regs/MP=196608 threads/MP=2048
+_ZN12_GLOBAL__N_113k_mv_rot_rowsILi1ELi8ELi1ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f threads=256 blocks/MP=7 status=0
+_ZN12_GLOBAL__N_113k_mv_rot_rowsILi1ELi4ELi1ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f threads=128 blocks/MP=14 status=0
+_ZN12_GLOBAL__N_113k_mv_rot_rowsILi2ELi8ELi2ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f threads=256 blocks/MP=6 status=0
+_ZN12_GLOBAL__N_113k_mv_rot_rowsILi4ELi10ELi4ELb1EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f threads=320 blocks/MP=3 status=0
+_ZN12_GLOBAL__N_113k_mv_rot_rowsILi4ELi10ELi4ELb0EEEvPKhS2_PKffS4_S4_PfS4_iiiS4_f threads=320 blocks/MP=3 status=0

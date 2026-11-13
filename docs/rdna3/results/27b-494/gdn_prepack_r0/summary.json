@@ -1,0 +1,20 @@
+{
+  "label": "gdn_prepack_r0",
+  "returncode": 0,
+  "elapsed": 13.133302073983941,
+  "peak_vram_bytes": 15642570752,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.416093703757404,
+      "samples_ts": [
+        49.1194,
+        49.4155,
+        49.4161,
+        49.4167
+      ],
+      "latency_ms": 2590.249257
+    }
+  ]
+}

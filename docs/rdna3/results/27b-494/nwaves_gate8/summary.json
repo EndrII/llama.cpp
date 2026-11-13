@@ -1,0 +1,19 @@
+{
+  "label": "nwaves_gate8",
+  "returncode": 0,
+  "elapsed": 10.676588350965176,
+  "peak_vram_bytes": 15787446272,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.0583875666398,
+      "samples_ts": [
+        48.8148,
+        49.0607,
+        49.0561
+      ],
+      "latency_ms": 2609.135896
+    }
+  ]
+}

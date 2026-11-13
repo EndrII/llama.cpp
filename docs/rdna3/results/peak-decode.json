@@ -1,0 +1,9 @@
+{
+  "model": "Qwen3.8-27B",
+  "gpu": "Radeon RX 7900 XT",
+  "decode_tokens_per_second": 50.1,
+  "statistic": "observed peak",
+  "provenance": "User observation during GPU ramp-up, confirmed 2026-11-04",
+  "mtp": false,
+  "speculative_decode": false
+}

@@ -1,0 +1,6 @@
+{
+  "scratch": "/tmp/claude-1000/-home-svt--config-Claude-scratch-workspaces-117fffdf-33f1-49e9-9021-541b4b295944-da0f735d-531e-47d2-8484-5ba02f97cc28-scratch-2026-10-30-635bae/d13df678-bae8-40d5-990b-0ad25a01fe64/scratchpad/dff",
+  "baseline": "/home/svt/tuning27b50/bin",
+  "source": "/tmp/claude-1000/-home-svt--config-Claude-scratch-workspaces-117fffdf-33f1-49e9-9021-541b4b295944-da0f735d-531e-47d2-8484-5ba02f97cc28-scratch-2026-10-30-635bae/d13df678-bae8-40d5-990b-0ad25a01fe64/scratchpad/dff/src",
+  "build": "/tmp/claude-1000/-home-svt--config-Claude-scratch-workspaces-117fffdf-33f1-49e9-9021-541b4b295944-da0f735d-531e-47d2-8484-5ba02f97cc28-scratch-2026-10-30-635bae/d13df678-bae8-40d5-990b-0ad25a01fe64/scratchpad/dff/build"
+}

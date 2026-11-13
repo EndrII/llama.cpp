@@ -298,3 +298,27 @@ extern "C" {
 #ifdef  __cplusplus
 }
 #endif
+
+#ifdef __cplusplus
+//
+// C++ internal API
+//
+
+#include <vector>
+
+// Hooks for the input-batch upload transaction (RDNA3 fused decode), exposed
+// by the backend registry layer (ggml-backend-reg.cpp) through a provider
+// registered with ggml-base at load time.
+struct ggml_input_batch_hook_pair { void (*begin)(); void (*end)(); };
+
+using ggml_input_batch_hooks_provider = const std::vector<ggml_input_batch_hook_pair> * (*)();
+
+// Exported from ggml-base despite its hidden visibility preset (BUILD_SHARED_LIBS);
+// called by the ggml wrapper layer at load time.
+#if defined(__GNUC__) || defined(__clang__)
+#    define GGML_BASE_INTERNAL_EXPORT __attribute__((visibility("default")))
+#else
+#    define GGML_BASE_INTERNAL_EXPORT
+#endif
+GGML_BASE_INTERNAL_EXPORT void ggml_backend_set_input_batch_hooks_provider(ggml_input_batch_hooks_provider provider);
+#endif

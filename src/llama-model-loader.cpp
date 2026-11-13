@@ -60,6 +60,8 @@ const char * llama_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q6_K:      name = LLAMA_FTYPE_PREFIX "Q6_K"; break;
         case LLAMA_FTYPE_MOSTLY_TQ1_0:     name = LLAMA_FTYPE_PREFIX "TQ1_0 - 1.69 bpw ternary"; break;
         case LLAMA_FTYPE_MOSTLY_TQ2_0:     name = LLAMA_FTYPE_PREFIX "TQ2_0 - 2.06 bpw ternary"; break;
+        case LLAMA_FTYPE_MOSTLY_TQ3_1S:    name = LLAMA_FTYPE_PREFIX "TQ3_1S - 4.0 bpw WHT-rotated 3-bit"; break;
+        case LLAMA_FTYPE_MOSTLY_TQ4_1S:    name = LLAMA_FTYPE_PREFIX "TQ4_1S - 5.0 bpw WHT-rotated 4-bit"; break;
         case LLAMA_FTYPE_MOSTLY_IQ2_XXS:   name = LLAMA_FTYPE_PREFIX "IQ2_XXS - 2.0625 bpw"; break;
         case LLAMA_FTYPE_MOSTLY_IQ2_XS:    name = LLAMA_FTYPE_PREFIX "IQ2_XS - 2.3125 bpw"; break;
         case LLAMA_FTYPE_MOSTLY_IQ2_S:     name = LLAMA_FTYPE_PREFIX "IQ2_S - 2.5 bpw"; break;
@@ -722,6 +724,15 @@ llama_model_loader::llama_model_loader(
     n_kv      = gguf_get_n_kv(metadata);
     n_tensors = weights_map.size();
 
+    // Ossicle INT4 files store their linear weights Hadamard-rotated: the HIP backend must rotate the activations too (ggml-cuda/int4-wmma.cu)
+    if (gguf_find_key(metadata, "ossicle.int4_rotation_block") >= 0) {
+#ifndef _WIN32
+        setenv("GGML_INT4", "3", 0);
+#endif
+        LLAMA_LOG_INFO("%s: rotated INT4 weights (ossicle.int4_rotation_block) - requires the ROCm/HIP RDNA3 backend, GGML_INT4=%s\n",
+                       __func__, getenv("GGML_INT4") ? getenv("GGML_INT4") : "unset");
+    }
+
     fver = (enum llama_fver) gguf_get_version(metadata);
 
     LLAMA_LOG_INFO("%s: loaded meta data with %d key-value pairs and %d tensors from %s (version %s)\n",
@@ -772,6 +783,8 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_Q6_K:    ftype = LLAMA_FTYPE_MOSTLY_Q6_K;    break;
             case GGML_TYPE_TQ1_0:   ftype = LLAMA_FTYPE_MOSTLY_TQ1_0;   break;
             case GGML_TYPE_TQ2_0:   ftype = LLAMA_FTYPE_MOSTLY_TQ2_0;   break;
+            case GGML_TYPE_TQ3_1S:  ftype = LLAMA_FTYPE_MOSTLY_TQ3_1S;  break;
+            case GGML_TYPE_TQ4_1S:  ftype = LLAMA_FTYPE_MOSTLY_TQ4_1S;  break;
             case GGML_TYPE_IQ2_XXS: ftype = LLAMA_FTYPE_MOSTLY_IQ2_XXS; break;
             case GGML_TYPE_IQ2_XS:  ftype = LLAMA_FTYPE_MOSTLY_IQ2_XS;  break;
             case GGML_TYPE_IQ2_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ2_S;   break;

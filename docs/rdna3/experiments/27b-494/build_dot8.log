@@ -1,0 +1,17 @@
+[  0%] Built target llama-common-base
+[  0%] Built target cpp-httplib
+[  2%] Built target ggml-base
+[  8%] Built target ggml-cpu
+[  8%] Building HIP object ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/__/ggml-cuda/gated_delta_net.cu.o
+[  8%] Building HIP object ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/__/ggml-cuda/ggml-cuda.cu.o
+[  8%] Building HIP object ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/__/ggml-cuda/int4-wmma.cu.o
+[  9%] Building HIP object ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmvq.cu.o
+/tmp/claude-1000/-home-svt--config-Claude-scratch-workspaces-117fffdf-33f1-49e9-9021-541b4b295944-da0f735d-531e-47d2-8484-5ba02f97cc28-scratch-2026-10-30-635bae/d13df678-bae8-40d5-990b-0ad25a01fe64/scratchpad/dff/src/ggml/src/ggml-cuda/int4-wmma.cu:844:12: error: '__builtin_amdgcn_sdot8' needs target feature dot1-insts
+  844 |     return __builtin_amdgcn_sdot8(a, b, c, false);
+      |            ^
+1 error generated when compiling for gfx1100.
+gmake[3]: *** [ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/build.make:491: ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/__/ggml-cuda/int4-wmma.cu.o] Error 1
+gmake[3]: *** Waiting for unfinished jobs....
+gmake[2]: *** [CMakeFiles/Makefile2:681: ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/all] Error 2
+gmake[1]: *** [CMakeFiles/Makefile2:995: tools/llama-bench/CMakeFiles/llama-bench.dir/rule] Error 2
+gmake: *** [Makefile:338: llama-bench] Error 2

@@ -1,0 +1,13 @@
+{
+  "label": "scale4_affine_quality_accuracy",
+  "returncode": 0,
+  "elapsed": 15.094959791051224,
+  "peak_vram_bytes": 19022684160,
+  "metrics": [
+    "Mean PPL(Q)                   :   5.972787 \u00b1   0.182242",
+    "Mean PPL(Q)/PPL(base)         :   1.015044 \u00b1   0.002993",
+    "Mean PPL(Q)-PPL(base)         :   0.088520 \u00b1   0.017764",
+    "Mean    KLD:   0.020690 \u00b1   0.000746",
+    "Same top p: 93.840 \u00b1 0.307 %"
+  ]
+}

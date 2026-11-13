@@ -1,0 +1,31 @@
+{
+  "label": "sweep_prefill_fast_2",
+  "returncode": 0,
+  "elapsed": 9.376501222024672,
+  "results": [
+    {
+      "prompt": 512,
+      "gen": 0,
+      "median_ts": 1975.785658529032,
+      "samples_ts": [
+        1672.69,
+        1975.94,
+        1974.65,
+        1975.79
+      ],
+      "latency_ms": 259.137421
+    },
+    {
+      "prompt": 2048,
+      "gen": 0,
+      "median_ts": 1896.8262133380447,
+      "samples_ts": [
+        1897.53,
+        1896.89,
+        1896.83,
+        1894.34
+      ],
+      "latency_ms": 1079.69828
+    }
+  ]
+}

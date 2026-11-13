@@ -1682,6 +1682,15 @@ class GGUFWriter:
     def add_audio_num_mel_bins(self, value: int) -> None:
         self.add_uint32(Keys.ClipAudio.NUM_MEL_BINS, value)
 
+    def add_audio_no_boundary_tokens(self, value: bool) -> None:
+        self.add_bool(Keys.ClipAudio.NO_BOUNDARY_TOKENS, value)
+
+    def add_audio_exact_frame_count(self, value: bool) -> None:
+        self.add_bool(Keys.ClipAudio.EXACT_FRAME_COUNT, value)
+
+    def add_audio_polyphase_resample(self, value: bool) -> None:
+        self.add_bool(Keys.ClipAudio.POLYPHASE_RESAMPLE, value)
+
     def add_audio_rvq_num_quantizers(self, value: int) -> None:
         self.add_uint32(Keys.ClipAudio.RVQ_NUM_QUANTIZERS, value)
 

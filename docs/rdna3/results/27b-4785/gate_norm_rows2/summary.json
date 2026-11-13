@@ -1,0 +1,20 @@
+{
+  "label": "gate_norm_rows2",
+  "returncode": 0,
+  "elapsed": 13.333517762017436,
+  "peak_vram_bytes": 15801958400,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 47.760892512484915,
+      "samples_ts": [
+        47.5414,
+        47.7609,
+        47.7655,
+        47.7398
+      ],
+      "latency_ms": 2680.016919
+    }
+  ]
+}

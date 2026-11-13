@@ -1,0 +1,13 @@
+{
+  "label": "postnorm_b1_accuracy",
+  "returncode": 0,
+  "elapsed": 25.50077046797378,
+  "peak_vram_bytes": 15977431040,
+  "metrics": [
+    "Mean PPL(Q)                   :   5.746634 \u00b1   0.668996",
+    "Mean PPL(Q)/PPL(base)         :   1.001506 \u00b1   0.001449",
+    "Mean PPL(Q)-PPL(base)         :   0.008640 \u00b1   0.008587",
+    "Mean    KLD:   0.000247 \u00b1   0.000032",
+    "Same top p: 99.412 \u00b1 0.339 %"
+  ]
+}

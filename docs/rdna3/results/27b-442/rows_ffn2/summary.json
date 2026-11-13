@@ -1,0 +1,19 @@
+{
+  "label": "rows_ffn2",
+  "returncode": 0,
+  "elapsed": 14.534415767993778,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 42.92441413790925,
+      "samples_ts": [
+        42.7751,
+        42.9368,
+        42.9244,
+        42.9205
+      ],
+      "latency_ms": 2981.985953
+    }
+  ]
+}

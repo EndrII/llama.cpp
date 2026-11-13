@@ -1,0 +1,20 @@
+{
+  "label": "runtime_sdmaoff",
+  "returncode": 0,
+  "elapsed": 14.285754124983214,
+  "peak_vram_bytes": 16202440704,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 44.077688659065736,
+      "samples_ts": [
+        43.8802,
+        44.0777,
+        44.0848,
+        44.0692
+      ],
+      "latency_ms": 2903.963522
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "command": [
+    "/home/svt/tuning27b-next/bin/llama-perplexity",
+    "-m",
+    "/mnt/data/work27b/qwen38-27b-rotq4-gptq.gguf",
+    "-ngl",
+    "99",
+    "-t",
+    "12",
+    "-f",
+    "/mnt/data/projects/ossicle-gguf/work/wiki.test.raw",
+    "-c",
+    "512",
+    "-b",
+    "1",
+    "-ub",
+    "1",
+    "--kl-divergence",
+    "--kl-divergence-base",
+    "/home/svt/tuning27b/decode_reference.bin"
+  ],
+  "env": {
+    "HOME": "/home/svt",
+    "PATH": "/usr/bin:/bin",
+    "HIP_VISIBLE_DEVICES": "0",
+    "LD_LIBRARY_PATH": "/home/svt/tuning27b-next/bin:/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_devel/lib:/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_core/lib:/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_libraries/lib",
+    "GGML_CUDA_BATCH_INPUTS": "1",
+    "GGML_INT4_HEAD_REQUANT": "iq3_s",
+    "GGML_INT4_HEAD_FILE": "/mnt/data/tuning27b-next/head_iq3_s.bin"
+  }
+}

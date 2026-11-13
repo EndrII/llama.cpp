@@ -498,6 +498,9 @@ class Keys:
     class ClipAudio:
         PROJECTOR_TYPE      = "clip.audio.projector_type" # for mixed modality models
         NUM_MEL_BINS        = "clip.audio.num_mel_bins"
+        NO_BOUNDARY_TOKENS  = "clip.audio.no_boundary_tokens"
+        EXACT_FRAME_COUNT   = "clip.audio.exact_frame_count"
+        POLYPHASE_RESAMPLE  = "clip.audio.polyphase_resample"
         EMBEDDING_LENGTH    = "clip.audio.embedding_length"
         FEED_FORWARD_LENGTH = "clip.audio.feed_forward_length"
         PROJECTION_DIM      = "clip.audio.projection_dim"
@@ -6895,6 +6898,8 @@ class GGMLQuantizationType(IntEnum):
     Q1_0    = 41
     Q2_0    = 42
     F8_E4M3 = 43
+    TQ3_1S  = 47
+    TQ4_1S  = 48
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -6952,6 +6957,8 @@ class LlamaFileType(IntEnum):
     MOSTLY_Q1_0          = 40  # except 1d tensors
     MOSTLY_Q2_0          = 41  # except 1d tensors
     MOSTLY_F8_E4M3       = 42  # except 1d tensors
+    MOSTLY_TQ3_1S        = 43  # except 1d tensors
+    MOSTLY_TQ4_1S        = 44  # except 1d tensors
 
     GUESSED              = 1024  # not specified in the model file
 
@@ -7129,6 +7136,8 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.Q1_0:    (128, 2 + 16),
     GGMLQuantizationType.Q2_0:    (64, 2 + 16),
     GGMLQuantizationType.F8_E4M3: (1, 1),
+    GGMLQuantizationType.TQ3_1S:  (32, 2 + 2 + 12),
+    GGMLQuantizationType.TQ4_1S:  (32, 2 + 2 + 16),
 }
 
 

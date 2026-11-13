@@ -1,0 +1,18 @@
+{
+  "label": "sweep_gdn_4",
+  "returncode": 0,
+  "elapsed": 11.5308944429853,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 42.95850772319966,
+      "samples_ts": [
+        42.8028,
+        42.9637,
+        42.9533
+      ],
+      "latency_ms": 2979.61933
+    }
+  ]
+}

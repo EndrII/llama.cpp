@@ -1,0 +1,20 @@
+{
+  "label": "runtime493_devq1",
+  "returncode": 0,
+  "elapsed": 13.232028931961395,
+  "peak_vram_bytes": 15751843840,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.31053679993547,
+      "samples_ts": [
+        49.0628,
+        49.3137,
+        49.3095,
+        49.3105
+      ],
+      "latency_ms": 2595.79409
+    }
+  ]
+}

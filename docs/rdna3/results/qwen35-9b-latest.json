@@ -1,0 +1,12 @@
+{
+  "model": "Qwen3.5-9B",
+  "gpu": "Radeon RX 7900 XT",
+  "prefill_pp512_tokens_per_second": 6624,
+  "decode_tokens_per_second": 126.2,
+  "prefill_preset": "fast",
+  "mtp": false,
+  "speculative_decode": false,
+  "provenance": "Author-supplied Latest merged report.pdf, Table 6, page 8",
+  "prefill_pp2048_tokens_per_second": 6561,
+  "report_sha256": "46832c92da810d07c5d32561cce1fed279bfe20efcb9f1bb2a8fef057793b1a3"
+}

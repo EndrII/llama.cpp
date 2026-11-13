@@ -1,0 +1,13 @@
+{
+  "label": "head_iq4nl_batch_b1",
+  "returncode": 0,
+  "elapsed": 25.406581489020027,
+  "peak_vram_bytes": 15639744512,
+  "metrics": [
+    "Mean PPL(Q)                   :   5.735255 \u00b1   0.665256",
+    "Mean PPL(Q)/PPL(base)         :   0.999523 \u00b1   0.006047",
+    "Mean PPL(Q)-PPL(base)         :  -0.002739 \u00b1   0.034715",
+    "Mean    KLD:   0.009051 \u00b1   0.000604",
+    "Same top p: 95.490 \u00b1 0.920 %"
+  ]
+}

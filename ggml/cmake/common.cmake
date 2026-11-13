@@ -56,9 +56,19 @@ function(ggml_get_system_arch)
     endif()
 endfunction()
 
+# TurboQuant: K-V flash-attention combinations for the turbo KV-cache quant
+# types (WHT + PolarQuant). Always compiled on CUDA/ROCm backends.
+set(GGML_CUDA_FA_TURBO_COMBINATIONS
+    turbo3_0-turbo3_0 turbo3_0-q8_0 q8_0-turbo3_0 f16-turbo3_0 turbo3_0-f16
+    turbo2_0-turbo2_0 turbo2_0-q8_0 q8_0-turbo2_0 f16-turbo2_0 turbo2_0-f16
+    turbo3_0-turbo2_0 turbo2_0-turbo3_0
+    turbo4_0-turbo4_0 turbo4_0-q8_0 q8_0-turbo4_0 f16-turbo4_0 turbo4_0-f16
+    turbo4_0-turbo3_0 turbo3_0-turbo4_0 turbo4_0-turbo2_0 turbo2_0-turbo4_0)
+
 # Determines which FlashAttention vector kernel template instances to compile, returns them in OUT_SRCS.
-function(ggml_cuda_fattn_vec_instances DIR OUT_SRCS)
-    set(FA_TYPES q4_0 q4_1 q5_0 q5_1 q8_0 bf16 f16)
+# EXTRA_COMBINATIONS (optional): additional <type_K>-<type_V> combinations to compile (e.g. the turbo KV types).
+function(ggml_cuda_fattn_vec_instances DIR OUT_SRCS EXTRA_COMBINATIONS)
+    set(FA_TYPES q4_0 q4_1 q5_0 q5_1 q8_0 bf16 f16 turbo2_0 turbo3_0 turbo4_0)
 
     string(TOLOWER "${GGML_CUDA_FA_QUANTS}" FA_QUANTS)
     string(STRIP   "${FA_QUANTS}" FA_QUANTS)
@@ -74,7 +84,11 @@ function(ggml_cuda_fattn_vec_instances DIR OUT_SRCS)
         set(FA_COMBINATIONS "")
         foreach (TYPE_V IN LISTS FA_TYPES)
             foreach (TYPE_K IN LISTS FA_TYPES)
-                list(APPEND FA_COMBINATIONS ${TYPE_K}-${TYPE_V})
+                # TurboQuant: only instantiate combinations that have a template instance
+                # (e.g. q4_0-turbo3_0 has no instance and is not needed)
+                if (EXISTS "${DIR}/template-instances/fattn-vec-instance-${TYPE_K}-${TYPE_V}.cu")
+                    list(APPEND FA_COMBINATIONS ${TYPE_K}-${TYPE_V})
+                endif()
             endforeach()
         endforeach()
     else()
@@ -96,6 +110,10 @@ function(ggml_cuda_fattn_vec_instances DIR OUT_SRCS)
             endforeach()
             list(APPEND FA_COMBINATIONS ${TYPE_K}-${TYPE_V})
         endforeach()
+    endif()
+
+    if (EXTRA_COMBINATIONS)
+        list(APPEND FA_COMBINATIONS ${EXTRA_COMBINATIONS})
     endif()
     list(REMOVE_DUPLICATES FA_COMBINATIONS)
 

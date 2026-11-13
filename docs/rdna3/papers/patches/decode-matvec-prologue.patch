@@ -1,0 +1,118 @@
+--- a/ggml/src/ggml-cuda/int4-wmma.cu	2026-11-02 12:40:00.011961853 -0800
++++ b/ggml/src/ggml-cuda/int4-wmma.cu	2026-11-02 13:09:19.529242837 -0800
+@@ -209,6 +209,47 @@
+     return rotate_regs(v, lane, b1, a2);
+ }
+ 
++// 8-bit quantization of one rotated 256-block (this lane's 8 values), same arithmetic as the per-value loop it replaces, but the 8 max / sum reductions are
++// independent, so they run in lock-step (the DPP chains hide each other's latency) and the lane-0 scale store is one branch instead of eight
++__device__ __forceinline__ void quant_rot8(const float8v & w, int lane, int8_t * qdst, float2 * ddst) {
++    const int h = lane >> 4, lc = lane & 15;
++    float x[8], am[8], d[8], sq[8]; int q[8];
++#pragma unroll
++    for (int i = 0; i < 8; i++) { x[i] = w[i] * 0.0625f; am[i] = fabsf(x[i]); }
++#pragma unroll
++    for (int i = 0; i < 8; i++) am[i] = fmaxf(am[i], dppx<0xB1>(am[i]));
++#pragma unroll
++    for (int i = 0; i < 8; i++) am[i] = fmaxf(am[i], dppx<0x4E>(am[i]));
++#pragma unroll
++    for (int i = 0; i < 8; i++) am[i] = fmaxf(am[i], dppx<0x141>(am[i]));
++#pragma unroll
++    for (int i = 0; i < 8; i++) am[i] = fmaxf(am[i], dppx<0x140>(am[i]));
++#pragma unroll
++    for (int i = 0; i < 8; i++) am[i] = fmaxf(am[i], swap_rows(am[i]));
++#pragma unroll
++    for (int i = 0; i < 8; i++) {
++        d[i] = am[i] / 127.0f;
++        q[i] = am[i] == 0.0f ? 0 : (int) roundf(x[i] / d[i]);
++        sq[i] = (float) q[i];
++    }
++#pragma unroll
++    for (int i = 0; i < 8; i++) sq[i] += dppx<0xB1>(sq[i]);
++#pragma unroll
++    for (int i = 0; i < 8; i++) sq[i] += dppx<0x4E>(sq[i]);
++#pragma unroll
++    for (int i = 0; i < 8; i++) sq[i] += dppx<0x141>(sq[i]);
++#pragma unroll
++    for (int i = 0; i < 8; i++) sq[i] += dppx<0x140>(sq[i]);
++#pragma unroll
++    for (int i = 0; i < 8; i++) sq[i] = sq[i] + swap_rows(sq[i]);
++#pragma unroll
++    for (int i = 0; i < 8; i++) qdst[i * 32 + 16 * h + lc] = (int8_t) q[i];
++    if (lane == 0) {
++#pragma unroll
++        for (int i = 0; i < 8; i++) ddst[i] = make_float2(d[i], d[i] * sq[i]);
++    }
++}
++
+ __global__ __launch_bounds__(32) void k_rot_f32(const float * __restrict__ X, float * __restrict__ Y, int K) {
+     const int sb = blockIdx.x, n = blockIdx.y, lane = threadIdx.x, h = lane >> 4, lc = lane & 15;
+     half16v b1, a2;
+@@ -762,18 +803,7 @@
+ #pragma unroll
+     for (int k = 0; k < 16; k++) { b1[k] = h16(k, lc); a2[k] = h16(lc, k < 8 ? 2 * k : 2 * (k - 8) + 1); }
+     const float8v w = rotate_regs(v, lane, b1, a2);
+-#pragma unroll
+-    for (int i = 0; i < 8; i++) {
+-        const float x = w[i] * 0.0625f;
+-        float amax = fabsf(x);
+-        amax = wave32_max(amax);
+-        const float d = amax / 127.0f;
+-        const int q = amax == 0.0f ? 0 : (int) roundf(x / d);
+-        float sq = (float) q;
+-        sq = wave32_sum(sq);
+-        Q[(size_t) n * K + wave * 256 + i * 32 + 16 * h + lc] = (int8_t) q;
+-        if (lane == 0) D[(size_t) n * (K / 32) + wave * 8 + i] = make_float2(d, d * sq);
+-    }
++    quant_rot8(w, lane, Q + (size_t) n * K + wave * 256, D + (size_t) n * (K / 32) + wave * 8);
+ }
+ 
+ // decode matvec on the repacked layout: one block = 16 weight rows (a feature tile) x NW waves splitting the 256-blocks of K.
+@@ -807,6 +837,10 @@
+ #pragma unroll
+         for (int k = 0; k < 16; k++) { rb1[k] = h16(k, r); ra2[k] = h16(r, k < 8 ? 2 * k : 2 * (k - 8) + 1); }
+     }
++    // the epilogue's per-row loads (row scale, residual) are issued up front instead of after the reduction
++    const int prow = ft * 16 + r;
++    float pS = 0.f, pxb = 0.f;
++    if (NC == 1 && !GATE) { pS = S[prow]; if (xb && h == 0) pxb = xb[prow]; }
+     float acc[NC], accg[NC];
+ #pragma unroll
+     for (int j = 0; j < NC; j++) { acc[j] = 0.f; accg[j] = 0.f; }
+@@ -828,18 +862,7 @@
+             const float4 * xd = (const float4 *) (Xd + (size_t) j * (K / 32) + sb * 8 + h * 4);
+             if (ROT) {
+                 const float8v wr = rotate_block(Xf + sb * 256, lane, rb1, ra2, Yf ? Yf + (size_t) sb * ystride : nullptr, rmode, Nw, neps);
+-#pragma unroll
+-                for (int i = 0; i < 8; i++) {
+-                    const float x = wr[i] * 0.0625f;
+-                    float amax = fabsf(x);
+-                    amax = wave32_max(amax);
+-                    const float d = amax / 127.0f;
+-                    const int q = amax == 0.0f ? 0 : (int) roundf(x / d);
+-                    float sq = (float) q;
+-                    sq = wave32_sum(sq);
+-                    rq[wv][i * 32 + 16 * h + r] = (int8_t) q;
+-                    if (lane == 0) rd[wv][i] = make_float2(d, d * sq);
+-                }
++                quant_rot8(wr, lane, &rq[wv][0], &rd[wv][0]);
+                 __builtin_amdgcn_wave_barrier();
+                 xq = (const uint4 *) (&rq[wv][h * 128]);
+                 xd = (const float4 *) (&rd[wv][h * 4]);
+@@ -885,14 +908,14 @@
+     __syncthreads();
+     if (wv == 0 && h == 0) {
+         const int row = ft * 16 + r;
+-        const float sf = S[row] * inv, sf2 = GATE ? S2[row] * inv2 : 0.f;
++        const float sf = (NC == 1 && !GATE ? pS : S[row]) * inv, sf2 = GATE ? S2[row] * inv2 : 0.f;
+ #pragma unroll
+         for (int j = 0; j < NC; j++) {
+             float a = 0.f, g = 0.f;
+ #pragma unroll
+             for (int q = 0; q < MV_NW; q++) { a += red[q][j][0][r]; g += red[q][j][1][r]; }
+             float res = a * sf;
+-            if (xb) res += xb[(size_t) j * stride_dst + row];
++            if (xb) res += NC == 1 && !GATE ? pxb : xb[(size_t) j * stride_dst + row];
+             if (GATE) {
+                 float gv = g * sf2;
+                 if (gb) gv += gb[(size_t) j * stride_dst + row];

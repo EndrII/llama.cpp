@@ -1,0 +1,35 @@
+{
+  "command": [
+    "cmake",
+    "-S",
+    "/tmp/claude-1000/up/src",
+    "-B",
+    "/mnt/data/base27b-rocm-compare/build72",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DGGML_HIP=ON",
+    "-DAMDGPU_TARGETS=gfx1100",
+    "-DCMAKE_HIP_COMPILER=/opt/rocm-7.2.0/lib/llvm/bin/clang++",
+    "-DCMAKE_PREFIX_PATH=/opt/rocm-7.2.0",
+    "-DGGML_HIP_GRAPHS=ON",
+    "-DGGML_HIP_NO_VMM=ON",
+    "-DGGML_HIP_MMQ_MFMA=ON",
+    "-DGGML_BACKEND_DL=OFF",
+    "-DGGML_CUDA_FA=ON",
+    "-DGGML_CUDA_FA_ALL_QUANTS=OFF",
+    "-DGGML_NATIVE=ON",
+    "-DLLAMA_BUILD_TESTS=OFF",
+    "-DLLAMA_BUILD_EXAMPLES=OFF",
+    "-DLLAMA_BUILD_MTMD=OFF",
+    "-DLLAMA_BUILD_SERVER=OFF",
+    "-DLLAMA_BUILD_UI=OFF",
+    "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+  ],
+  "env": {
+    "HOME": "/home/svt",
+    "PATH": "/opt/rocm-7.2.0/bin:/usr/bin:/bin",
+    "ROCM_PATH": "/opt/rocm-7.2.0",
+    "HIP_PATH": "/opt/rocm-7.2.0",
+    "LD_LIBRARY_PATH": "/opt/rocm-7.2.0/lib",
+    "TMPDIR": "/mnt/data/base27b-rocm-compare/tmp"
+  }
+}

@@ -1,0 +1,9 @@
+0.03.065.453 I 
+0.03.065.509 I system_info: n_threads = 12 (n_threads_batch = 12) / 12 | ROCm : NO_VMM = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.03.065.520 I perplexity: tokenizing the input ..
+0.03.409.611 I perplexity: tokenization took 344.085 ms
+0.03.409.682 I perplexity: calculating perplexity over 3 chunks, n_ctx=512, batch_size=512, n_seq=1
+0.03.937.214 I perplexity: 0.53 seconds per pass - ETA 0.02 minutes
+[1]4.4513,[2]5.9463,[3]5.5886,
+0.04.643.120 I Final estimate: PPL = 5.5886 +/- 0.51959
+

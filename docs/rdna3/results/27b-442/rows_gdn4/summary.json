@@ -1,0 +1,19 @@
+{
+  "label": "rows_gdn4",
+  "returncode": 0,
+  "elapsed": 14.63511999399634,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 42.599997315867355,
+      "samples_ts": [
+        42.4365,
+        42.5915,
+        42.6101,
+        42.6
+      ],
+      "latency_ms": 3004.695025
+    }
+  ]
+}

@@ -1,0 +1,179 @@
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -3550,7 +3550,7 @@
+     }
+ 
+     // GDN gates: skinny bf16 matmul -> reshape -> sigmoid, or -> reshape -> add(bias) -> softplus -> mul(scale), folded into the matmul epilogue
+-    if (node->op == GGML_OP_MUL_MAT && node->src[0]->type == GGML_TYPE_BF16 && node->src[0]->ne[1] <= 32 && node->src[1]->type == GGML_TYPE_F32 &&
++    if (node->op == GGML_OP_MUL_MAT && node->src[0]->type == GGML_TYPE_BF16 && (node->src[0]->ne[1] <= 32 || node->src[0]->ne[1] == 48) && node->src[1]->type == GGML_TYPE_F32 &&
+         i + 4 < cgraph->n_nodes && ggml_node_has_n_uses(cgraph, i, 1)) {
+         const ggml_tensor * m1 = cgraph->nodes[i + 1];
+         ggml_tensor * n2 = cgraph->nodes[i + 2];
+--- a/ggml/src/ggml-cuda/int4-wmma.cu
++++ b/ggml/src/ggml-cuda/int4-wmma.cu
+@@ -1068,6 +1068,84 @@
+ }
+ 
+ 
++// Several output-row tiles share one fused activation rotation.
++template <int ROWS, int NW = 10>
++__global__ __launch_bounds__(32 * NW) void k_mv_rot_rows(const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ S, float inv,
++        const float * __restrict__ X, const float * __restrict__ Y, float * __restrict__ out, const float * __restrict__ residual,
++        int K, int mode, int ystride, const float * __restrict__ norm, float eps) {
++    const int lane = threadIdx.x, r = lane & 15, h = lane >> 4, wv = threadIdx.y;
++    const int nsb = K / 256, ft0 = blockIdx.x * ROWS;
++    __shared__ __align__(16) int8_t rq[NW][256];
++    __shared__ __align__(16) float2 rd[NW][8];
++    __shared__ float red[ROWS][NW][16];
++    half16v rb1, ra2;
++#pragma unroll
++    for (int k = 0; k < 16; k++) { rb1[k] = h16(k, r); ra2[k] = h16(r, k < 8 ? 2 * k : 2 * (k - 8) + 1); }
++    float acc[ROWS], scales[ROWS], res[ROWS];
++#pragma unroll
++    for (int ri = 0; ri < ROWS; ri++) {
++        acc[ri] = 0.f;
++        scales[ri] = S[(ft0 + ri) * 16 + r];
++        res[ri] = residual && h == 0 ? residual[(ft0 + ri) * 16 + r] : 0.f;
++    }
++    for (int sb = wv; sb < nsb; sb += NW) {
++        uint4 weights[ROWS][4];
++        uint2 subscales[ROWS];
++#pragma unroll
++        for (int ri = 0; ri < ROWS; ri++) {
++            const size_t wo = ((size_t) ((ft0 + ri) * nsb + sb) * 8 + h * 4) * 256 + r * 16;
++            const size_t so = ((size_t) ((ft0 + ri) * nsb + sb) * 16 + r) * 16 + h * 8;
++#pragma unroll
++            for (int g = 0; g < 4; g++) { weights[ri][g] = *(const uint4 *) (Wp + wo + g * 256); }
++            subscales[ri] = *(const uint2 *) (Wh + so);
++        }
++        const float8v wr = rotate_block(X + sb * 256, lane, rb1, ra2, Y ? Y + (size_t) sb * ystride : nullptr, mode, norm, eps);
++        quant_rot8(wr, lane, &rq[wv][0], &rd[wv][0]);
++        __builtin_amdgcn_wave_barrier();
++        const uint4 * xq = (const uint4 *) &rq[wv][h * 128];
++        const float4 * xd = (const float4 *) &rd[wv][h * 4];
++        uint4 xv[8];
++        float4 dv[2];
++#pragma unroll
++        for (int i = 0; i < 8; i++) { xv[i] = xq[i]; }
++        dv[0] = xd[0]; dv[1] = xd[1];
++#pragma unroll
++        for (int ri = 0; ri < ROWS; ri++) {
++#pragma unroll
++            for (int g = 0; g < 4; g++) {
++                const float2 ds = g < 2 ? (g == 0 ? make_float2(dv[0].x, dv[0].y) : make_float2(dv[0].z, dv[0].w)) : (g == 2 ? make_float2(dv[1].x, dv[1].y) : make_float2(dv[1].z, dv[1].w));
++                const uint32_t xw[8] = {xv[2*g].x,xv[2*g].y,xv[2*g].z,xv[2*g].w,xv[2*g+1].x,xv[2*g+1].y,xv[2*g+1].z,xv[2*g+1].w};
++                const uint4 w = weights[ri][g];
++                const uint32_t ww[4] = {w.x,w.y,w.z,w.w};
++                int si = 0;
++#pragma unroll
++                for (int wi = 0; wi < 4; wi++) {
++                    si = sdot4((int) ((ww[wi] & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2*wi], si);
++                    si = sdot4((int) (((ww[wi] >> 4) & 0x0F0F0F0Fu) ^ 0x08080808u), (int) xw[2*wi+1], si);
++                }
++                const uint32_t sw = g < 2 ? subscales[ri].x : subscales[ri].y;
++                acc[ri] += (float) ((sw >> (16 * (g & 1))) & 0xFFFF) * (ds.x * (float) si - 8.f * ds.y);
++            }
++        }
++    }
++#pragma unroll
++    for (int ri = 0; ri < ROWS; ri++) {
++        acc[ri] += swap_rows(acc[ri]);
++        if (h == 0) { red[ri][wv][r] = acc[ri]; }
++    }
++    __syncthreads();
++    if (wv == 0 && h == 0) {
++#pragma unroll
++        for (int ri = 0; ri < ROWS; ri++) {
++            float sum = 0.f;
++#pragma unroll
++            for (int q = 0; q < NW; q++) { sum += red[ri][q][r]; }
++            out[(ft0 + ri) * 16 + r] = sum * (scales[ri] * inv) + res[ri];
++        }
++    }
++}
++
++
+ } // namespace
+ 
+ bool ggml_cuda_int4_rotated(const ggml_tensor * src0) {
+@@ -1277,6 +1355,16 @@
+     case NCV: if (gate) k_mv<NCV, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, g.Wp, g.Wh, g.S, inv2, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst); \
+               else      k_mv<NCV, false><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, nullptr, nullptr, nullptr, 0.f, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst); break;
+     if (rot) {
++        static const int rows_27b = getenv("GGML_INT4_27B_ROWS") ? atoi(getenv("GGML_INT4_27B_ROWS")) : 4;
++        if (M == 5120 && (K == 6144 || K == 17408) && (rows_27b == 2 || rows_27b == 4)) {
++            const auto run_rows = [&](auto rows_c) {
++                constexpr int ROWS = decltype(rows_c)::value;
++                k_mv_rot_rows<ROWS><<<dim3(M / (16 * ROWS)), blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, glu_x ? glu_x : (const float *) src1->data, glu_y, (float *) dst->data, xb, K, mode, ystride, nw, eps);
++            };
++            if (rows_27b == 2) run_rows(std::integral_constant<int, 2>{}); else run_rows(std::integral_constant<int, 4>{});
++            CUDA_CHECK(cudaGetLastError());
++            return;
++        }
+         k_mv<1, false, true><<<grid, blk, 0, stream>>>(w.Wp, w.Wh, w.S, inv, nullptr, nullptr, nullptr, 0.f, xq_ptr, xd_ptr, (float *) dst->data, xb, gb, glu, M, K, stride_dst, glu_x ? glu_x : (const float *) src1->data, glu_y, mode, ystride, nw, eps);
+         CUDA_CHECK(cudaGetLastError());
+         return;
+--- a/ggml/src/ggml-cuda/mm-skinny-rdna3.cu
++++ b/ggml/src/ggml-cuda/mm-skinny-rdna3.cu
+@@ -1,4 +1,4 @@
+-// Skinny bf16 matmul for RDNA3 prompt processing: dst[n][m] = sum_k src1[n][k] * src0[m][k] with bf16 weights (M <= 64, e.g. the GDN
++// Skinny bf16 matmul for RDNA3 prompt processing: dst[n][m] = sum_k src1[n][k] * src0[m][k] with bf16 weights (M <= 32 or M == 48, e.g. the GDN
+ // alpha/beta projections), f32 activations and f32 output.  Replaces f32->bf16 convert + hipBLASLt gemm + bf16->f32 convert (three
+ // launches) by one WMMA kernel; the activations are rounded to bf16 exactly as the convert did, but the result stays in f32.
+ #include "mm-skinny-rdna3.cuh"
+@@ -16,7 +16,6 @@
+ 
+ namespace {
+ 
+-constexpr int SK_MAXMT = 2;     // M <= 32
+ constexpr int SK_W = 16;        // waves per block, each takes a slice of K
+ 
+ __device__ __forceinline__ uint32_t sk_bf16_bits(float f) {      // round to nearest even
+@@ -24,6 +23,7 @@
+     return (b + 0x7FFFu + ((b >> 16) & 1u)) >> 16;
+ }
+ 
++template <int SK_MAXMT>
+ __global__ void __launch_bounds__(SK_W * 32) sk_kernel(const __bf16 * __restrict__ W, const float * __restrict__ X, float * __restrict__ out, int M, int N, int K,
+                                                    int epi, const float * __restrict__ bias, const float * __restrict__ scl) {
+     const int tid = threadIdx.x, w = tid >> 5, lane = tid & 31, hh = lane >> 4, lc = lane & 15;
+@@ -38,7 +38,7 @@
+ 
+     const int64_t tok = t0 + lc;
+     const float * xr = X + (tok < N ? tok : 0) * (int64_t) K;
+-    constexpr int U = 5;                                  // k-steps with their loads in flight together
++    constexpr int U = SK_MAXMT == 3 ? 2 : 5;                                  // k-steps with their loads in flight together
+     for (int k = w * kq; k < (w + 1) * kq; k += 16 * U) {
+         float4 xf[U][4];
+         uint4 wf[U][SK_MAXMT][2];
+@@ -152,7 +152,7 @@
+     if (src0->type != GGML_TYPE_BF16 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) { return false; }
+     const int64_t K = src0->ne[0], M = src0->ne[1], N = src1->ne[1] * src1->ne[2] * src1->ne[3];
+     const bool decode = N >= 1 && N <= 8;
+-    if (M > 16 * SK_MAXMT || (decode ? (K % 8) : (M % 16 || K % (16 * SK_W) || N <= 8)) || src0->ne[2] != 1 || src0->ne[3] != 1 || src1->ne[0] != K) { return false; }
++    if ((M > 32 && M != 48) || (decode ? (K % 8) : (M % 16 || K % (16 * SK_W) || N <= 8)) || src0->ne[2] != 1 || src0->ne[3] != 1 || src1->ne[0] != K) { return false; }
+     if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst) || (epi == 0 && dst->ne[0] != M) || ggml_nelements(dst) != N * M) { return false; }
+     if (((uintptr_t) src0->data & 15) || ((uintptr_t) src1->data & 15)) { return false; }
+     if (decode) {
+@@ -161,7 +161,11 @@
+         CUDA_CHECK(cudaGetLastError());
+         return true;
+     }
+-    sk_kernel<<<dim3((unsigned) ((N + 15) / 16)), SK_W * 32, 0, ctx.stream()>>>((const __bf16 *) src0->data, (const float *) src1->data, (float *) dst->data, (int) M, (int) N, (int) K, epi, bias, scl);
++    if (M <= 32) {
++    sk_kernel<2><<<dim3((unsigned) ((N + 15) / 16)), SK_W * 32, 0, ctx.stream()>>>((const __bf16 *) src0->data, (const float *) src1->data, (float *) dst->data, (int) M, (int) N, (int) K, epi, bias, scl);
++    } else {
++    sk_kernel<3><<<dim3((unsigned) ((N + 15) / 16)), SK_W * 32, 0, ctx.stream()>>>((const __bf16 *) src0->data, (const float *) src1->data, (float *) dst->data, (int) M, (int) N, (int) K, epi, bias, scl);
++    }
+     CUDA_CHECK(cudaGetLastError());
+     return true;
+ }
+@@ -178,7 +182,7 @@
+                                          ggml_tensor * dst0, int epi0, const float * bias0, const float * scl0, ggml_tensor * dst1, int epi1) {
+     if (!GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[ctx.device].cc)) { return false; }
+     const int64_t K = w0->ne[0], M = w0->ne[1], N = src1->ne[1] * src1->ne[2] * src1->ne[3];
+-    if (w0->type != GGML_TYPE_BF16 || w1->type != GGML_TYPE_BF16 || src1->type != GGML_TYPE_F32 || w1->ne[0] != K || w1->ne[1] != M || N < 1 || N > 8 || K % 8 || M > 32) { return false; }
++    if (w0->type != GGML_TYPE_BF16 || w1->type != GGML_TYPE_BF16 || src1->type != GGML_TYPE_F32 || w1->ne[0] != K || w1->ne[1] != M || N < 1 || N > 8 || K % 8 || (M > 32 && M != 48)) { return false; }
+     if (!ggml_is_contiguous(w0) || !ggml_is_contiguous(w1) || !ggml_is_contiguous(src1) || ggml_nelements(dst0) != N * M || ggml_nelements(dst1) != N * M) { return false; }
+     if (((uintptr_t) w0->data & 15) || ((uintptr_t) w1->data & 15)) { return false; }
+     const sk_job j0 = { (const __bf16 *) w0->data, (float *) dst0->data, epi0, bias0, scl0 };

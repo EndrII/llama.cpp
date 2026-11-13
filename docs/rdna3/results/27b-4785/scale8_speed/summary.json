@@ -1,0 +1,32 @@
+{
+  "label": "scale8_speed",
+  "returncode": 0,
+  "elapsed": 15.936450409004465,
+  "peak_vram_bytes": 16780464128,
+  "results": [
+    {
+      "prompt": 512,
+      "gen": 0,
+      "median_ts": 1224.8490407049296,
+      "samples_ts": [
+        1083.38,
+        1226.06,
+        1224.85,
+        1224.61
+      ],
+      "latency_ms": 418.010696
+    },
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 46.116918247732336,
+      "samples_ts": [
+        45.9979,
+        46.127,
+        46.0925,
+        46.1169
+      ],
+      "latency_ms": 2775.554067
+    }
+  ]
+}

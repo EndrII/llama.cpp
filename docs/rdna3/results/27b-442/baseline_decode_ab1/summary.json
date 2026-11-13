@@ -1,0 +1,20 @@
+{
+  "label": "baseline_decode_ab1",
+  "returncode": 0,
+  "elapsed": 17.986560637014918,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 41.69748596807441,
+      "samples_ts": [
+        41.5113,
+        41.7058,
+        41.7042,
+        41.6852,
+        41.6908
+      ],
+      "latency_ms": 3069.729434
+    }
+  ]
+}

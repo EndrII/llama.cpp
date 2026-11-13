@@ -319,7 +319,8 @@ static __global__ void rms_norm_back_f32(
 template <int block_size>
 static __global__ void l2_norm_f32(
         const float * x, float * dst, const int ncols, const int nchannels, const int nsamples,
-        const int64_t stride_row, const int64_t stride_channel, const int64_t stride_sample, const float eps) {
+        const int64_t stride_row, const int64_t stride_channel, const int64_t stride_sample, const float eps,
+        const float * x2 = nullptr, float * dst2 = nullptr) {
     const int nrows = gridDim.x;
     const int row   = blockIdx.x;
     const int tid   = threadIdx.x;
@@ -328,11 +329,21 @@ static __global__ void l2_norm_f32(
 
     ggml_cuda_pdl_sync();
 
+    // second tensor of a fused pair (same shape and strides): the back half of grid.z normalizes it
+    int sample0 = blockIdx.z;
+    const float * x_   = x;
+    float       * dst_ = dst;
+    if (x2 != nullptr && sample0 >= (int) (gridDim.z >> 1)) {
+        sample0 -= gridDim.z >> 1;
+        x_   = x2;
+        dst_ = dst2;
+    }
+
     // grid.y and grid.z are clamped to the CUDA limit, iterate over the excess channels/samples
-    for (int sample = blockIdx.z; sample < nsamples; sample += gridDim.z) {
+    for (int sample = sample0; sample < nsamples; sample += gridDim.z) {
         for (int channel = blockIdx.y; channel < nchannels; channel += gridDim.y) {
-            const float * xc   = x   + sample*stride_sample + channel*stride_channel + row*stride_row;
-            float       * dstc = dst + ((sample*nchannels + channel)*nrows + row)*ncols;
+            const float * xc   = x_   + sample*stride_sample + channel*stride_channel + row*stride_row;
+            float       * dstc = dst_ + ((sample*nchannels + channel)*nrows + row)*ncols;
 
             float tmp = 0.0f; // partial sum for thread in warp
 
@@ -532,16 +543,17 @@ static void rms_norm_back_f32_cuda(const float * grad, const float * xf, float *
 
 static void l2_norm_f32_cuda(
         const float * x, float * dst, const int ncols, const int nrows, const int nchannels, const int nsamples,
-        const int64_t stride_row, const int64_t stride_channel, const int64_t stride_sample, const float eps, cudaStream_t stream) {
-    const dim3 blocks_num(nrows, MIN(nchannels, UINT16_MAX), MIN(nsamples, UINT16_MAX));
+        const int64_t stride_row, const int64_t stride_channel, const int64_t stride_sample, const float eps, cudaStream_t stream,
+        const float * x2 = nullptr, float * dst2 = nullptr) {
+    const dim3 blocks_num(nrows, MIN(nchannels, UINT16_MAX), MIN(x2 ? 2 * nsamples : nsamples, UINT16_MAX));
     if (ncols < 1024) {
         const dim3 block_dims(WARP_SIZE, 1, 1);
         const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params{blocks_num, block_dims, 0, stream};
-        ggml_cuda_kernel_launch(l2_norm_f32<WARP_SIZE>, launch_params, x, dst, ncols, nchannels, nsamples, stride_row, stride_channel, stride_sample, eps);
+        ggml_cuda_kernel_launch(l2_norm_f32<WARP_SIZE>, launch_params, x, dst, ncols, nchannels, nsamples, stride_row, stride_channel, stride_sample, eps, x2, dst2);
     } else {
         const dim3 block_dims(1024, 1, 1);
         const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params{blocks_num, block_dims, block_dims.x > WARP_SIZE ? 32 * sizeof(float): 0, stream};
-        ggml_cuda_kernel_launch(l2_norm_f32<1024>, launch_params, x, dst, ncols, nchannels, nsamples, stride_row, stride_channel, stride_sample, eps);
+        ggml_cuda_kernel_launch(l2_norm_f32<1024>, launch_params, x, dst, ncols, nchannels, nsamples, stride_row, stride_channel, stride_sample, eps, x2, dst2);
     }
 }
 
@@ -798,6 +810,19 @@ void ggml_cuda_op_rms_norm_back(ggml_backend_cuda_context & ctx, ggml_tensor * d
     GGML_ASSERT(eps >= 0.0f);
 
     rms_norm_back_f32_cuda(grad_d, src0f_d, dst_d, ne00, nrows, eps, stream);
+}
+
+// two L2 norms of identically shaped tensors (q and k of the GDN layers) in one launch
+void ggml_cuda_op_l2_norm_pair(ggml_backend_cuda_context & ctx, ggml_tensor * dst, ggml_tensor * dst2) {
+    const ggml_tensor * src0 = dst->src[0];
+    GGML_ASSERT(src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 && dst2->src[0]->type == GGML_TYPE_F32);
+    GGML_TENSOR_UNARY_OP_LOCALS;
+    float eps;
+    memcpy(&eps, dst->op_params, sizeof(float));
+    const size_t ts0 = ggml_type_size(src0->type);
+    GGML_ASSERT(nb00 == ts0);
+    l2_norm_f32_cuda((const float *) src0->data, (float *) dst->data, ne00, ne01, ne02, ne03, nb01 / ts0, nb02 / ts0, nb03 / ts0, eps, ctx.stream(),
+                     (const float *) dst2->src[0]->data, (float *) dst2->data);
 }
 
 void ggml_cuda_op_l2_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {

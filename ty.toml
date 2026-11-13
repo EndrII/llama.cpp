@@ -8,6 +8,8 @@ deprecated = "warn"
 [src]
 exclude = [
     "./tools/mtmd/legacy-models/**",
+    # Research records from the RDNA3 INT4 work; not shipped code
+    "./docs/rdna3/**",
 ]
 
 [[overrides]]

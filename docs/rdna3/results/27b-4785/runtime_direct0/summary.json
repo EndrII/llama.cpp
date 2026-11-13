@@ -1,0 +1,20 @@
+{
+  "label": "runtime_direct0",
+  "returncode": 0,
+  "elapsed": 14.23430529498728,
+  "peak_vram_bytes": 16129085440,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 44.167260379888475,
+      "samples_ts": [
+        43.9705,
+        44.1658,
+        44.1739,
+        44.1673
+      ],
+      "latency_ms": 2898.07425
+    }
+  ]
+}

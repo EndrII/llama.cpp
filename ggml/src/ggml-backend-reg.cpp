@@ -597,3 +597,35 @@ void ggml_backend_load_all_from_path(const char * dir_path) {
         ggml_backend_load(backend_path);
     }
 }
+
+//
+// Input-batch upload transaction hooks (RDNA3 fused decode)
+//
+
+// Expose the input-batch transaction hooks to ggml-base (used by the sched
+// input upload path) without a circular ggml-base -> ggml dependency: the
+// registry registers a provider at load time, the hooks are collected lazily
+// on first use, i.e. after the backends have been loaded.
+namespace {
+
+std::vector<ggml_input_batch_hook_pair> collect_input_batch_hooks() {
+    std::vector<ggml_input_batch_hook_pair> result;
+    for (size_t i = 0; i < ggml_backend_reg_count(); i++) {
+        const auto reg   = ggml_backend_reg_get(i);
+        const auto begin = reinterpret_cast<void (*)()>(ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_input_batch_begin"));
+        const auto end   = reinterpret_cast<void (*)()>(ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_input_batch_end"));
+        if (begin && end) result.push_back({begin, end});
+    }
+    return result;
+}
+
+const struct input_batch_hooks_initializer {
+    input_batch_hooks_initializer() {
+        ggml_backend_set_input_batch_hooks_provider([]() -> const std::vector<ggml_input_batch_hook_pair> * {
+            static const std::vector<ggml_input_batch_hook_pair> hooks = collect_input_batch_hooks();
+            return hooks.empty() ? nullptr : &hooks;
+        });
+    }
+} s_input_batch_hooks_initializer;
+
+}

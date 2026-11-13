@@ -1,0 +1,13 @@
+{
+  "label": "selected_ppl_quality",
+  "returncode": 0,
+  "elapsed": 14.894144513993524,
+  "peak_vram_bytes": 16182497280,
+  "metrics": [
+    "Mean PPL(Q)                   :   5.975924 \u00b1   0.182175",
+    "Mean PPL(Q)/PPL(base)         :   1.015577 \u00b1   0.003391",
+    "Mean PPL(Q)-PPL(base)         :   0.091657 \u00b1   0.020045",
+    "Mean    KLD:   0.024445 \u00b1   0.000897",
+    "Same top p: 93.186 \u00b1 0.322 %"
+  ]
+}

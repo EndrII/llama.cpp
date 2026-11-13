@@ -1,0 +1,21 @@
+{
+  "label": "final_decode_baseA",
+  "returncode": 0,
+  "elapsed": 16.035995960992295,
+  "peak_vram_bytes": 15812456448,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 47.862558114439956,
+      "samples_ts": [
+        47.6397,
+        47.8673,
+        47.8488,
+        47.8585,
+        47.8666
+      ],
+      "latency_ms": 2674.3242535
+    }
+  ]
+}

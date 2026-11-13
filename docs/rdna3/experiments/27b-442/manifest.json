@@ -1,0 +1,11 @@
+{
+  "source_worktree": "/mnt/9100pro/ossicle-work/llama.cpp-decode-fold",
+  "base_commit": "5b11a3613566d4baa5445e993c9a4729cb019a7e",
+  "model": "/mnt/data/work27b/qwen38-27b-rotq4-gptq.gguf",
+  "source_hashes": {
+    "mm-skinny-rdna3.cu": "d7e8ad150d186d84b898991676e065e750ddb0ffc0e55db02736fac42389300d",
+    "ggml-cuda.cu": "f1309c4fbd7c72ce9acb693cb56241b3aea059f60474ee92be21d556eb86cb99",
+    "int4-wmma.cu": "1dec87801e84d3206c826f097b1dba891ecdc07503233d11dcead092ecdd3233"
+  },
+  "library_sha256": "1f5a8ff5784eadb0fac19223092af07cfc60464878ae56fb15b23ab22035930a"
+}

@@ -1,0 +1,34 @@
+{
+  "version": "10.1.0",
+  "command": [
+    "/mnt/data/base27b-rocm-compare/bin101/llama-bench",
+    "-m",
+    "/mnt/9100pro/ossicle-work/qwen38-27b-Q4_K_M.gguf",
+    "-ngl",
+    "99",
+    "-t",
+    "12",
+    "-b",
+    "2048",
+    "-ub",
+    "512",
+    "-fa",
+    "auto",
+    "-p",
+    "512,2048",
+    "-n",
+    "128",
+    "-r",
+    "4",
+    "-o",
+    "json"
+  ],
+  "env": {
+    "HOME": "/home/svt",
+    "PATH": "/usr/bin:/bin",
+    "HIP_VISIBLE_DEVICES": "0",
+    "LD_LIBRARY_PATH": "/mnt/data/base27b-rocm-compare/bin101:/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_devel/lib:/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_core/lib:/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_libraries/lib",
+    "TMPDIR": "/mnt/data/base27b-rocm-compare/tmp"
+  },
+  "utc": "2026-11-04T05:25:01.706984+00:00"
+}

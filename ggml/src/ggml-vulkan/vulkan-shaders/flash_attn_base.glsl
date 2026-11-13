@@ -101,7 +101,8 @@ layout (binding = 7) readonly buffer SP {int32_t data_sparse[];};
 #define O_TYPE FLOAT_TYPE
 #define O_TYPEV4 FLOAT_TYPEV4
 #endif
-
+// fa_block_elems / fa_quant_r_mmq / fa_type_needs_shmem live in fa_types.glsl
+// (included above), shared with the other FA-family shaders.
 // These can't be `const` globals because GLSL forbids function calls in global
 // const initializers, even when the spec constants would let the driver fold
 // them. Macros expand at the use site and fold after specialization.

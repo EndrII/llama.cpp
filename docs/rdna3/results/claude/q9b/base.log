@@ -1,0 +1,10 @@
+0.02.430.539 I 
+0.02.430.897 I system_info: n_threads = 6 (n_threads_batch = 6) / 12 | ROCm : NO_VMM = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.02.430.953 I perplexity: saving all logits to /mnt/9100pro/ossicle-work/kld_base_qwen35_9b.bin
+0.02.430.958 I perplexity: tokenizing the input ..
+0.02.771.527 I perplexity: tokenization took 340.564 ms
+0.02.771.599 I perplexity: calculating perplexity over 24 chunks, n_ctx=512, batch_size=2048, n_seq=4
+0.04.137.570 I perplexity: 1.27 seconds per pass - ETA 0.12 minutes
+[1]5.1006,[2]6.9486,[3]6.8678,[4]6.8321,[5]6.8824,[6]7.2352,[7]7.4884,[8]7.9984,[9]8.4565,[10]8.7659,[11]8.6756,[12]8.7740,[13]9.1961,[14]8.7318,[15]8.7091,[16]8.7265,[17]8.2104,[18]8.3166,[19]8.2734,[20]8.2490,[21]7.9848,[22]7.9050,[23]7.6037,[24]7.2672,
+0.09.208.438 I Final estimate: PPL = 7.2672 +/- 0.23605
+

@@ -1,0 +1,13 @@
+{
+  "label": "no_spill_accuracy_fast",
+  "returncode": 0,
+  "elapsed": 10.88760384003399,
+  "peak_vram_bytes": 19014316032,
+  "metrics": [
+    "Mean PPL(Q)                   :   6.152013 \u00b1   0.189368",
+    "Mean PPL(Q)/PPL(base)         :   1.045502 \u00b1   0.005044",
+    "Mean PPL(Q)-PPL(base)         :   0.267746 \u00b1   0.030739",
+    "Mean    KLD:   0.056538 \u00b1   0.001814",
+    "Same top p: 89.739 \u00b1 0.388 %"
+  ]
+}

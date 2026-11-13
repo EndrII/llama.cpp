@@ -10,6 +10,7 @@
 
 #include "ggml-backend.h"
 #include "ggml-backend-impl.h"
+#include <cstdlib>
 #include "ggml-alloc.h"
 #include "ggml-impl.h"
 
@@ -2196,6 +2197,51 @@ static void ggml_backend_sched_prefetch_inputs(ggml_backend_sched_t sched, int s
     }
 }
 
+// Input-batch upload transaction hooks (RDNA3 fused decode). The backend
+// registry lives in the ggml wrapper layer (ggml-backend-reg.cpp); ggml-base
+// accesses it through this provider, which the registry registers at load
+// time, to avoid a circular ggml-base -> ggml dependency.
+static ggml_input_batch_hooks_provider s_ggml_input_batch_hooks_get = nullptr;
+
+void ggml_backend_set_input_batch_hooks_provider(ggml_input_batch_hooks_provider provider) {
+    s_ggml_input_batch_hooks_get = provider;
+}
+
+static ggml_input_batch_hooks_provider ggml_input_batch_hooks_get() {
+    return s_ggml_input_batch_hooks_get;
+}
+
+// Opt-in backend extension: keep source storage alive while a decode input
+// transaction uploads its tensors, then synchronize once before graph compute.
+class ggml_input_batch_scope {
+    using hook = void (*)();
+    using hooks = std::vector<ggml_input_batch_hook_pair>;
+    const hooks * active = nullptr;
+public:
+    explicit ggml_input_batch_scope(bool decode) {
+        static const bool requested = [] { const char * e = std::getenv("GGML_CUDA_BATCH_INPUTS"); return e && std::atoi(e); }();
+        if (!decode || !requested) return;
+        // The backend registry lives in the ggml wrapper layer; it registers
+        // the provider at load time (see ggml-backend-reg.cpp).
+        static const hooks available = [] {
+            hooks result;
+            const auto provider = ggml_input_batch_hooks_get();
+            if (provider) {
+                const auto * p = provider();
+                if (p) result = *p;
+            }
+            return result;
+        }();
+        active = available.empty() ? nullptr : &available;
+        if (active) for (const auto & h : *active) h.begin();
+    }
+    ~ggml_input_batch_scope() {
+        if (active) for (auto i = active->rbegin(); i != active->rend(); ++i) i->end();
+    }
+    ggml_input_batch_scope(const ggml_input_batch_scope &) = delete;
+    ggml_input_batch_scope & operator=(const ggml_input_batch_scope &) = delete;
+};
+
 static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     struct ggml_backend_sched_split * splits = sched->splits;
@@ -2217,6 +2263,16 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
 
+        // Preserve user-input lifetimes and complete the upload transaction
+        // before launching the split. Restrict the extension to small host inputs.
+        {
+        bool batchable = split->n_inputs > 0;
+        for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+            const ggml_tensor * t = split->inputs[input_id];
+            const auto buffer = t->view_src ? t->view_src->buffer : t->buffer;
+            batchable &= buffer && ggml_backend_buffer_is_host(buffer) && ggml_nbytes(t) <= 65536;
+        }
+        ggml_input_batch_scope upload_transaction(batchable);
         // copy the input tensors to the split backend
         // the weights in host memory are copied last, so that the copy callback can read the other inputs of the split
         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
@@ -2231,6 +2287,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             if (ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id]);
             }
+        }
         }
 
         if (!sched->callback_eval) {

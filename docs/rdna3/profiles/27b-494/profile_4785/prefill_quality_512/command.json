@@ -1,0 +1,31 @@
+{
+  "command": [
+    "/mnt/data/venvs/rocm101/lib/python3.12/site-packages/_rocm_sdk_core/bin/rocprofv3",
+    "--kernel-trace",
+    "--hip-runtime-trace",
+    "--memory-copy-trace",
+    "-d",
+    "/home/svt/tuning27b-next/profile_4785/prefill_quality_512",
+    "-o",
+    "run",
+    "-f",
+    "csv",
+    "--",
+    "/home/svt/tuning27b-next/bin/llama-bench",
+    "-m",
+    "/mnt/data/work27b/qwen38-27b-rotq4-gptq.gguf",
+    "-ngl",
+    "99",
+    "-t",
+    "12",
+    "-p",
+    "512",
+    "-n",
+    "0",
+    "-r",
+    "3",
+    "-o",
+    "json"
+  ],
+  "env": {}
+}

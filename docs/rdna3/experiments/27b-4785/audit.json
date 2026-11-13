@@ -1,0 +1,1 @@
+[{"label": "aql_audit_graph", "env": {"HSA_TOOLS_LIB": "/home/svt/tuning27b50/aql_audit.so"}, "args": ["-p", "0", "-n", "32", "-r", "2", "-o", "json"]}, {"label": "aql_audit_nograph", "env": {"HSA_TOOLS_LIB": "/home/svt/tuning27b50/aql_audit.so", "GGML_CUDA_DISABLE_GRAPHS": "1"}, "args": ["-p", "0", "-n", "32", "-r", "2", "-o", "json"]}]

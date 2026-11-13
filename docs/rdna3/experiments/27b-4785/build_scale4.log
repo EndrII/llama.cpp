@@ -1,0 +1,22 @@
+[  0%] Built target llama-common-base
+[  0%] Built target cpp-httplib
+[  2%] Built target ggml-base
+[  8%] Built target ggml-cpu
+[  8%] Building HIP object ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/__/ggml-cuda/int4-wmma.cu.o
+[  8%] Linking HIP shared library ../../../bin/libggml-hip.so
+[ 45%] Built target ggml-hip
+[ 45%] Linking CXX shared library ../../bin/libggml.so
+[ 45%] Built target ggml
+[ 45%] Linking CXX shared library ../bin/libllama.so
+[ 89%] Built target llama
+[ 90%] Linking CXX shared library ../bin/libllama-common.so
+[ 98%] Built target llama-common
+[ 98%] Linking CXX shared library ../../bin/libllama-bench-impl.so
+[100%] Built target llama-bench-impl
+[100%] Linking CXX executable ../../bin/llama-bench
+/usr/bin/ld: ../../bin/libggml-hip.so.0.18.0: undefined reference to `ggml_cuda_int4_matvec(ggml_backend_cuda_context&, ggml_tensor const*, ggml_tensor const*, ggml_tensor*, ggml_cuda_mm_fusion_args_host const*, float const*, float const*, int, int, float const*, float, ggml_cuda_conv_fold const*, ggml_tensor const*, float*, ggml_cuda_mv_jobs const*, ggml_tensor const*, ggml_tensor const*)'
+collect2: error: ld returned 1 exit status
+gmake[3]: *** [tools/llama-bench/CMakeFiles/llama-bench.dir/build.make:105: bin/llama-bench] Error 1
+gmake[2]: *** [CMakeFiles/Makefile2:988: tools/llama-bench/CMakeFiles/llama-bench.dir/all] Error 2
+gmake[1]: *** [CMakeFiles/Makefile2:995: tools/llama-bench/CMakeFiles/llama-bench.dir/rule] Error 2
+gmake: *** [Makefile:338: llama-bench] Error 2

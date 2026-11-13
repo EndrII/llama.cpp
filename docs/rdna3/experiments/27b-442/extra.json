@@ -1,0 +1,43 @@
+[
+  {
+    "label": "final_base_accuracy_fast",
+    "baseline": true,
+    "tool": "llama-perplexity",
+    "env": {
+      "GGML_INT4_PREFILL": "fast"
+    },
+    "args": [
+      "-f",
+      "/mnt/data/projects/ossicle-gguf/work/wiki.test.raw",
+      "-c",
+      "512",
+      "-b",
+      "512",
+      "-ub",
+      "512",
+      "--chunks",
+      "24",
+      "--kl-divergence-base",
+      "/mnt/9100pro/ossicle-work/kld_base_qwen38_27b.bin",
+      "--kl-divergence"
+    ]
+  },
+  {
+    "label": "decode_accuracy_b1_base",
+    "baseline": true,
+    "tool": "llama-perplexity",
+    "args": [
+      "-f",
+      "/mnt/data/projects/ossicle-gguf/work/wiki.test.raw",
+      "-c",
+      "512",
+      "-b",
+      "1",
+      "-ub",
+      "1",
+      "--kl-divergence-base",
+      "/home/svt/tuning27b/decode_reference.bin",
+      "--kl-divergence"
+    ]
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "label": "r8chunk_a8_20",
+  "returncode": 0,
+  "elapsed": 13.182035106990952,
+  "peak_vram_bytes": 15684689920,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 49.08643988072354,
+      "samples_ts": [
+        48.7752,
+        49.0864,
+        49.0941,
+        49.0839
+      ],
+      "latency_ms": 2607.644806
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "label": "aql_nograph_v2",
+  "returncode": 0,
+  "elapsed": 4.019360197009519,
+  "peak_vram_bytes": 15795822592,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 32,
+      "median_ts": 45.270215874320634,
+      "samples_ts": [
+        45.3514,
+        45.2702
+      ],
+      "latency_ms": 706.866521
+    }
+  ]
+}

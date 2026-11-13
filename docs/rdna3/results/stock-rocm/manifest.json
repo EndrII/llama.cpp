@@ -1,0 +1,46 @@
+{
+  "source": "/tmp/claude-1000/up/src",
+  "source_commit": "unknown (existing local source archive)",
+  "source_code_sha256": "f326811f7bed7cf7b2e6d49073162a133c4351e2d204012baf8a5f85e9e9db80",
+  "source_files_hashed": 1086,
+  "ggml_build_option_differences": {},
+  "identical_benchmark_fields": {
+    "cpu_info": "AMD Ryzen 5 7600X3D 6-Core Processor",
+    "backends": "ROCm",
+    "model_filename": "/mnt/9100pro/ossicle-work/qwen38-27b-Q4_K_M.gguf",
+    "model_type": "qwen35 27B Q4_K - Medium",
+    "model_size": 16799719424,
+    "model_n_params": 27320697856,
+    "n_batch": 2048,
+    "n_ubatch": 512,
+    "n_threads": 12,
+    "type_k": "f16",
+    "type_v": "f16",
+    "n_gpu_layers": 99,
+    "no_kv_offload": false,
+    "flash_attn": -1,
+    "n_depth": 0
+  },
+  "model_file_stat": {
+    "bytes": 16810716160,
+    "mtime_ns": 1793695050534543661
+  },
+  "downloads": false,
+  "comparison": "Each SDK compiler plus its own HIP, HSA, hipBLAS, hipBLASLt and rocBLAS libraries. This is a complete SDK/toolchain comparison, not runtime-only substitution.",
+  "7.2.0": {
+    "binaries": {
+      "llama-bench": "893f203aa7f4047c28ad9e952b95d02714c305c7bf2ce4cd44a3559abfa0719a",
+      "libggml-hip.so": "33b00d2d054268f78eeadb8574b6d5bc6735a941a9dda226beffda51c6186b4c",
+      "libllama-bench-impl.so": "e6d3303d5be01eae0569fe1e47a7a6c8bf0def2804430e1dad568350f0693cd2",
+      "libllama.so": "a08c589ad5dce3c36c3490808c980127b0f0e284d5ca4d29ac643ab75cc6205e"
+    }
+  },
+  "10.1.0": {
+    "binaries": {
+      "llama-bench": "9dc8788ea0cb791425aa6b54723e02cf378b2ae9b9253e69b0b43438235f1cb8",
+      "libggml-hip.so": "4b1c6b195ad1908bc13fe8ba646f6cf062846fe5ccf38d9701b18e4b2118ff21",
+      "libllama-bench-impl.so": "229c779c51f696cd9158059f86ea572d9c8dc356a958776035ad0f236a595493",
+      "libllama.so": "2e297fddd638fbc4361d010be790153d9c8718d32cfc82370181e96c5785b787"
+    }
+  }
+}

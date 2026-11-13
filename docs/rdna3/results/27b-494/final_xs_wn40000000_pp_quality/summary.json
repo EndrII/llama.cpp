@@ -1,0 +1,32 @@
+{
+  "label": "final_xs_wn40000000_pp_quality",
+  "returncode": 0,
+  "elapsed": 14.034752148028929,
+  "peak_vram_bytes": 16299724800,
+  "results": [
+    {
+      "prompt": 512,
+      "gen": 0,
+      "median_ts": 1221.0378846344756,
+      "samples_ts": [
+        1083.16,
+        1221.04,
+        1218.57,
+        1221.04
+      ],
+      "latency_ms": 419.315409
+    },
+    {
+      "prompt": 2048,
+      "gen": 0,
+      "median_ts": 1118.5693048541546,
+      "samples_ts": [
+        1119.16,
+        1118.67,
+        1118.31,
+        1118.57
+      ],
+      "latency_ms": 1830.910245
+    }
+  ]
+}

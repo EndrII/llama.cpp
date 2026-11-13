@@ -1,0 +1,29 @@
+// A wave holds a 16x16 tile by columns. Transform rows in registers,
+// then columns through DPP; retain the same (2*i+h, lc) output layout.
+__device__ __forceinline__ float8v rotate_fht(const float * xrow, int lane) {
+    const int lc=lane&15,h=lane>>4;
+    float x[16];
+#pragma unroll
+    for(int r=0;r<16;r++)x[r]=xrow[r*16+lc]*sign256(r*16+lc);
+#pragma unroll
+    for(int stride=1;stride<16;stride*=2){
+#pragma unroll
+        for(int base=0;base<16;base+=2*stride){
+#pragma unroll
+            for(int j=0;j<stride;j++){const float a=x[base+j],b=x[base+j+stride];x[base+j]=a+b;x[base+j+stride]=a-b;}
+        }
+    }
+    float8v w;
+#pragma unroll
+    for(int i=0;i<8;i++)w[i]=h?x[2*i+1]:x[2*i];
+    const uint32_t m1=(lc&1)?0x80000000u:0,m2=(lc&2)?0x80000000u:0,m4=(lc&4)?0x80000000u:0,m8=(lc&8)?0x80000000u:0;
+#pragma unroll
+    for(int i=0;i<8;i++){const float p=dppx<0xB1>(w[i]);w[i]=__uint_as_float(__float_as_uint(w[i])^m1)+p;}
+#pragma unroll
+    for(int i=0;i<8;i++){const float p=dppx<0x4E>(w[i]);w[i]=__uint_as_float(__float_as_uint(w[i])^m2)+p;}
+#pragma unroll
+    for(int i=0;i<8;i++){const float p=dppx<0x141>(dppx<0x1B>(w[i]));w[i]=__uint_as_float(__float_as_uint(w[i])^m4)+p;}
+#pragma unroll
+    for(int i=0;i<8;i++){const float p=dppx<0x140>(dppx<0x141>(w[i]));w[i]=__uint_as_float(__float_as_uint(w[i])^m8)+p;}
+    return w;
+}

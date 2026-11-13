@@ -1,0 +1,20 @@
+{
+  "label": "scale8_classic",
+  "returncode": 0,
+  "elapsed": 13.82788126997184,
+  "peak_vram_bytes": 16196173824,
+  "results": [
+    {
+      "prompt": 0,
+      "gen": 128,
+      "median_ts": 45.45908003006473,
+      "samples_ts": [
+        45.4184,
+        45.4493,
+        45.4591,
+        45.4608
+      ],
+      "latency_ms": 2815.719102
+    }
+  ]
+}

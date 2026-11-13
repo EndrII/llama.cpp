@@ -5,6 +5,8 @@ exclude =
     # Do not traverse examples and tools
     examples,
     tools,
+    # Research records from the RDNA3 INT4 work; not shipped code
+    docs/rdna3,
     # Do not traverse .venv directories
     .venv*,
     # Do not include package initializers

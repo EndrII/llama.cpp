@@ -1,0 +1,99 @@
+// Experimental: amortize the repeated input normalization/rotation over more gate/up rows.
+template <int ROWS, int NW = 10>
+__global__ __launch_bounds__(32 * NW) void k_gate_norm_rows(
+        const uint8_t * __restrict__ Wp, const uint8_t * __restrict__ Wh, const float * __restrict__ S,
+        const uint8_t * __restrict__ Gp, const uint8_t * __restrict__ Gh, const float * __restrict__ Gs,
+        const float * __restrict__ X, const float * __restrict__ Nw, float eps,
+        float * __restrict__ out, const float * __restrict__ xb, const float * __restrict__ gb, int glu) {
+    constexpr int K = 5120, NSB = K / 256;
+    const int lane = threadIdx.x, r = lane & 15, h = lane >> 4, wv = threadIdx.y, ft0 = blockIdx.x * ROWS;
+    __shared__ float part[NSB];
+    __shared__ __align__(16) int8_t rq[NW][256];
+    __shared__ __align__(16) float2 rd[NW][8];
+    __shared__ float red[ROWS][NW][2][16];
+    for (int sb = wv; sb < NSB; sb += NW) {
+        float ss = 0.f;
+#pragma unroll
+        for (int q = 0; q < 4; q++) {
+            const float4 x = ((const float4 *) (X + sb * 256 + r * 16))[q];
+            ss += x.x*x.x + x.y*x.y + x.z*x.z + x.w*x.w;
+        }
+        ss = wave32_sum(ss) * 0.5f;
+        if (lane == 0) part[sb] = ss;
+    }
+    __syncthreads();
+    float ss = 0.f;
+    for (int sb = 0; sb < NSB; sb++) ss += part[sb];
+    const float norm_scale = rsqrtf(ss / K + eps);
+    half16v rb1, ra2;
+#pragma unroll
+    for (int k = 0; k < 16; k++) { rb1[k] = h16(k, r); ra2[k] = h16(r, k < 8 ? 2*k : 2*(k-8)+1); }
+    float acc[ROWS], accg[ROWS], sf[ROWS], sgf[ROWS];
+    uint32_t meta[ROWS], metag[ROWS];
+#pragma unroll
+    for (int ri = 0; ri < ROWS; ri++) {
+        const int row = (ft0 + ri) * 16 + r;
+        acc[ri] = 0.f; accg[ri] = 0.f;
+        sf[ri] = row_scale(S[row]); sgf[ri] = row_scale(Gs[row]);
+        meta[ri] = __float_as_uint(S[row]); metag[ri] = __float_as_uint(Gs[row]);
+    }
+    for (int sb = wv; sb < NSB; sb += NW) {
+        uint4 weights[ROWS][4], gates[ROWS][4];
+        uint16_t scales[ROWS], gatescales[ROWS];
+#pragma unroll
+        for (int ri = 0; ri < ROWS; ri++) {
+            const size_t wo = ((size_t) ((ft0+ri)*NSB+sb)*8+h*4)*256+r*16;
+            const size_t so = ((size_t) ((ft0+ri)*NSB+sb)*16+r)*4+h*2;
+#pragma unroll
+            for (int g = 0; g < 4; g++) { weights[ri][g] = nt128(Wp,wo+g*256); gates[ri][g] = nt128(Gp,wo+g*256); }
+            scales[ri] = *(const uint16_t *)(Wh+so); gatescales[ri] = *(const uint16_t *)(Gh+so);
+        }
+        const float8v wr = rotate_block(X+sb*256,lane,rb1,ra2,Nw+sb*256,4,nullptr,norm_scale);
+        quant_rot8(wr,lane,&rq[wv][0],&rd[wv][0]);
+        __builtin_amdgcn_wave_barrier();
+        const uint4 * xq = (const uint4 *) &rq[wv][h*128];
+        const float4 * xd = (const float4 *) &rd[wv][h*4];
+        uint4 xv[8]; float4 dv[2];
+#pragma unroll
+        for(int i=0;i<8;i++) xv[i]=xq[i];
+        dv[0]=xd[0];dv[1]=xd[1];
+#pragma unroll
+        for(int ri=0;ri<ROWS;ri++) {
+#pragma unroll
+            for(int g=0;g<4;g++) {
+                const float2 ds = g < 2 ? (g == 0 ? make_float2(dv[0].x,dv[0].y) : make_float2(dv[0].z,dv[0].w)) : (g == 2 ? make_float2(dv[1].x,dv[1].y) : make_float2(dv[1].z,dv[1].w));
+                const uint32_t xw[8]={xv[2*g].x,xv[2*g].y,xv[2*g].z,xv[2*g].w,xv[2*g+1].x,xv[2*g+1].y,xv[2*g+1].z,xv[2*g+1].w};
+                const auto w=weights[ri][g],gw=gates[ri][g];
+                const uint32_t ww[4]={w.x,w.y,w.z,w.w},gg[4]={gw.x,gw.y,gw.z,gw.w};
+                int a=0,b=0;
+#pragma unroll
+                for(int wi=0;wi<4;wi++) {
+                    a=sdot4(((ww[wi]&0x0F0F0F0Fu)^0x08080808u),xw[2*wi],a);
+                    a=sdot4((((ww[wi]>>4)&0x0F0F0F0Fu)^0x08080808u),xw[2*wi+1],a);
+                    b=sdot4(((gg[wi]&0x0F0F0F0Fu)^0x08080808u),xw[2*wi],b);
+                    b=sdot4((((gg[wi]>>4)&0x0F0F0F0Fu)^0x08080808u),xw[2*wi+1],b);
+                }
+                acc[ri]+=(float)row_code(meta[ri],(scales[ri]>>(4*g))&15)*(ds.x*a-8.f*ds.y);
+                accg[ri]+=(float)row_code(metag[ri],(gatescales[ri]>>(4*g))&15)*(ds.x*b-8.f*ds.y);
+            }
+        }
+    }
+#pragma unroll
+    for(int ri=0;ri<ROWS;ri++) {
+        acc[ri]+=swap_rows(acc[ri]);accg[ri]+=swap_rows(accg[ri]);
+        if(h==0){red[ri][wv][0][r]=acc[ri];red[ri][wv][1][r]=accg[ri];}
+    }
+    __syncthreads();
+    if(wv==0&&h==0) {
+#pragma unroll
+        for(int ri=0;ri<ROWS;ri++) {
+            float a=0.f,b=0.f;
+#pragma unroll
+            for(int q=0;q<NW;q++){a+=red[ri][q][0][r];b+=red[ri][q][1][r];}
+            const int row=(ft0+ri)*16+r;
+            float value=a*sf[ri]+(xb?xb[row]:0.f), gate=b*sgf[ri]+(gb?gb[row]:0.f);
+            switch(glu){case GGML_GLU_OP_SWIGLU:value*=ggml_cuda_op_silu_single(gate);break;case GGML_GLU_OP_GEGLU:value*=ggml_cuda_op_gelu_single(gate);break;default:value*=gate;break;}
+            out[row]=value;
+        }
+    }
+}
