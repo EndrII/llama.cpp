@@ -119,8 +119,7 @@ __global__ void k_repack(const block_q4_0 * __restrict__ W, int K, int nsb, cons
 
 // wave32 butterfly reductions on DPP / permlanex16 (a few cycles each) instead of ds_bpermute (__shfl_xor), whose latency dominated the
 // quantization prologues; every lane gets the result
-#ifdef INT4W_DEVICE_OK
-#if defined(__HIP_DEVICE_COMPILE__)
+#if defined(INT4W_DEVICE_OK) && defined(__HIP_DEVICE_COMPILE__) && defined(__GFX11__)
 template <int CTRL> __device__ __forceinline__ float dppx(float x) { return __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(x), CTRL, 0xF, 0xF, false)); }
 __device__ __forceinline__ uint32_t swap_rows_u(uint32_t x) { return (uint32_t) __builtin_amdgcn_permlanex16(0, (int) x, 0x76543210u, 0xFEDCBA98u, false, false); }
 __device__ __forceinline__ float swap_rows(float x) { return __uint_as_float(swap_rows_u(__float_as_uint(x))); }
@@ -133,12 +132,32 @@ __device__ __forceinline__ float wave32_sum(float x) {
     return x + swap_rows(x);
 }
 #else
-template <int CTRL> __device__ __forceinline__ float dppx(float x) { return x; }
-__device__ __forceinline__ uint32_t swap_rows_u(uint32_t x) { return x; }
-__device__ __forceinline__ float swap_rows(float x) { return x; }
-__device__ __forceinline__ float wave32_max(float x) { return x; }
-__device__ __forceinline__ float wave32_sum(float x) { return x; }
+// portable fallback for non-RDNA3 targets (and for the host compile, where these are never executed): the DPP chain above is the
+// shfl_xor butterfly over offsets 1, 2, 4, 8 plus the 16-lane row swap, so the same steps run via __shfl_xor (32-lane subgroups)
+template <int CTRL> __device__ __forceinline__ float dppx(float x) {
+#if defined(__HIP_DEVICE_COMPILE__)
+    const int off = (CTRL == 0xB1) ? 1 : (CTRL == 0x4E) ? 2 : (CTRL == 0x141) ? 4 : 8;
+    return __shfl_xor_sync(0xffffffffu, x, off, 32);
+#else
+    return x;
 #endif
+}
+__device__ __forceinline__ uint32_t swap_rows_u(uint32_t x) {
+#if defined(__HIP_DEVICE_COMPILE__)
+    return __shfl_xor_sync(0xffffffffu, x, 16, 32);
+#else
+    return x;
+#endif
+}
+__device__ __forceinline__ float swap_rows(float x) { return __uint_as_float(swap_rows_u(__float_as_uint(x))); }
+__device__ __forceinline__ float wave32_max(float x) {
+    x = fmaxf(x, dppx<0xB1>(x)); x = fmaxf(x, dppx<0x4E>(x)); x = fmaxf(x, dppx<0x141>(x)); x = fmaxf(x, dppx<0x140>(x));
+    return fmaxf(x, swap_rows(x));
+}
+__device__ __forceinline__ float wave32_sum(float x) {
+    x += dppx<0xB1>(x); x += dppx<0x4E>(x); x += dppx<0x141>(x); x += dppx<0x140>(x);
+    return x + swap_rows(x);
+}
 #endif
 
 // ---------------------------------------------------------------------------------------------------------------- rotation

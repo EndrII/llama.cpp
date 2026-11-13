@@ -2452,7 +2452,7 @@ class TextModel(ModelBase):
         # older HybridDNATokenizer versions (Carbon-500M/3B/8B) do not register the base tokenizer's added tokens (<|im_start|>, <think>, ...) as their own
         # but they are still encoded as special tokens: take their types from the base tokenizer
         base_tokenizer = getattr(tokenizer, "_base_tokenizer", tokenizer)
-        added_tokens_decoder = {**base_tokenizer.added_tokens_decoder, **tokenizer.added_tokens_decoder}  # ty: ignore[unresolved-attribute]
+        added_tokens_decoder = {**base_tokenizer.added_tokens_decoder, **tokenizer.added_tokens_decoder}
 
         tokens: list[str] = []
         toktypes: list[int] = []
@@ -2500,7 +2500,7 @@ class TextModel(ModelBase):
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(dir_model, trust_remote_code=True)
         vocab_size = hparams["vocab_size"]
-        assert max(tokenizer.get_vocab().values()) < vocab_size  # ty: ignore[unresolved-attribute]
+        assert max(tokenizer.get_vocab().values()) < vocab_size
 
         tokpre = self.get_vocab_base_pre(tokenizer)
 
