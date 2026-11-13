@@ -47,13 +47,28 @@ constexpr int TILE_N = WAVES_N * NJ * 16;  // tokens per block (also the activat
 // the 4B's weights stay below the threshold and keep the 8-wave launch
 static int64_t int4_wn4_min() { static const int64_t v = getenv("GGML_INT4_WN4_MIN") ? atoll(getenv("GGML_INT4_WN4_MIN")) : 30000000; return v; }
 
+// Fast path: raw-buffer loads with a swizzled rsrc descriptor (needs the LLVM >= 18 / ROCm >= 6.3 builtins; gfx11 only).  On older
+// toolchains or other targets fall back to plain loads: there only k_mv/k_mv_rot_rows (linear layout) ever run, and the GEMM kernels
+// are not compiled (INT4W_DEVICE_OK) - their swizzled loads would be wrong on those targets anyway.
+#if defined(__HIP_DEVICE_COMPILE__) && defined(__GFX11__) && __has_builtin(__builtin_amdgcn_make_buffer_rsrc)
+typedef __amdgpu_buffer_rsrc_t int4w_rsrc_t;
 #define INT4W_RSRC(p) __builtin_amdgcn_make_buffer_rsrc((void *)(p), 0, 0x7fffffff, 0x31004000)
-__device__ __forceinline__ int4v bl128(__amdgpu_buffer_rsrc_t r, int voff, int soff) { return __builtin_amdgcn_raw_buffer_load_b128(r, voff, soff, 0); }
-__device__ __forceinline__ int2v bl64(__amdgpu_buffer_rsrc_t r, int voff, int soff) { return __builtin_amdgcn_raw_buffer_load_b64(r, voff, soff, 0); }
+__device__ __forceinline__ int4v bl128(int4w_rsrc_t r, int voff, int soff) { return __builtin_amdgcn_raw_buffer_load_b128(r, voff, soff, 0); }
+__device__ __forceinline__ int2v bl64(int4w_rsrc_t r, int voff, int soff) { return __builtin_amdgcn_raw_buffer_load_b64(r, voff, soff, 0); }
 __device__ __forceinline__ uint4 nt128(const uint8_t * p, size_t offset) {
     const int4v v = __builtin_amdgcn_raw_buffer_load_b128(INT4W_RSRC(p), (int) offset, 0, 6);
     return make_uint4(v.x, v.y, v.z, v.w);
 }
+#else
+#if defined(__GFX11__) && defined(INT4W_DEVICE_OK)
+#error "the int4-wmma GEMM needs the raw-buffer load builtins (ROCm >= 6.3) on gfx11: update ROCm or set GGML_INT4=1"
+#endif
+typedef const uint8_t * int4w_rsrc_t;
+#define INT4W_RSRC(p) (p)
+__device__ __forceinline__ int4v bl128(int4w_rsrc_t r, int voff, int soff) { return *(const int4v *) (r + voff + soff); }
+__device__ __forceinline__ int2v bl64(int4w_rsrc_t r, int voff, int soff) { return *(const int2v *) (r + voff + soff); }
+__device__ __forceinline__ uint4 nt128(const uint8_t * p, size_t offset) { return *(const uint4 *) (p + offset); }
+#endif
 #define INT4W_LO(v) __builtin_shufflevector((v), (v), 0, 1)
 #define INT4W_HI(v) __builtin_shufflevector((v), (v), 2, 3)
 __device__ __forceinline__ void mul24a(int & out, int a, int b) { asm volatile("v_mul_i32_i24 %0, %1, %2" : "=v"(out) : "v"(a), "v"(b)); }
@@ -351,7 +366,7 @@ __global__ __launch_bounds__(WN * 32) void k_gemm(const uint8_t * __restrict__ W
     const int nsb = K / 256;
     const int ft0 = blockIdx.x * MI;
     const int tt0 = (blockIdx.y * WN + wn) * NJ;
-    const __amdgpu_buffer_rsrc_t rWp = INT4W_RSRC(Wp), rWh = INT4W_RSRC(Wh), rX4 = INT4W_RSRC(X4p), rXM = INT4W_RSRC(XMp);
+    const int4w_rsrc_t rWp = INT4W_RSRC(Wp), rWh = INT4W_RSRC(Wh), rX4 = INT4W_RSRC(X4p), rXM = INT4W_RSRC(XMp);
 
     int itot[MI][NJ][8];
 #pragma unroll
@@ -532,7 +547,7 @@ __global__ __launch_bounds__(WN * 32) void k_gemm8(const uint8_t * __restrict__ 
     const int nsb = K / 256;
     const int ft0 = blockIdx.x * MI;
     const int tt0 = (blockIdx.y * WN + wn) * NJ;
-    const __amdgpu_buffer_rsrc_t rWp = INT4W_RSRC(Wp), rWh = INT4W_RSRC(Wh), rXh = INT4W_RSRC(Xhp), rXl = INT4W_RSRC(Xlp), rXM = INT4W_RSRC(XMp);
+    const int4w_rsrc_t rWp = INT4W_RSRC(Wp), rWh = INT4W_RSRC(Wh), rXh = INT4W_RSRC(Xhp), rXl = INT4W_RSRC(Xlp), rXM = INT4W_RSRC(XMp);
 
     float tot[MI][NJ][8];
 #pragma unroll
@@ -656,7 +671,7 @@ __global__ __launch_bounds__(WN * 32) void k_gemm8w(const uint8_t * __restrict__
     const int nsb = K / 256;
     const int ft0 = blockIdx.x * MI;
     const int tt0 = (blockIdx.y * WN + wn) * NJ;
-    const __amdgpu_buffer_rsrc_t rWp = INT4W_RSRC(Wp), rWh = INT4W_RSRC(Wh), rXh = INT4W_RSRC(Xhp), rXl = INT4W_RSRC(Xlp), rXM = INT4W_RSRC(XMp);
+    const int4w_rsrc_t rWp = INT4W_RSRC(Wp), rWh = INT4W_RSRC(Wh), rXh = INT4W_RSRC(Xhp), rXl = INT4W_RSRC(Xlp), rXM = INT4W_RSRC(XMp);
 
     float tot[MI][NJ][8];
 #pragma unroll
@@ -683,7 +698,7 @@ __global__ __launch_bounds__(WN * 32) void k_gemm8w(const uint8_t * __restrict__
             const int8v z = {0, 0, 0, 0, 0, 0, 0, 0};
 #pragma unroll
             for (int pass = 0; pass < 2; pass++) {
-                const __amdgpu_buffer_rsrc_t rX = pass ? rXl : rXh;
+                const int4w_rsrc_t rX = pass ? rXl : rXh;
                 int4v wc[MI], xc[NJ], wn_[MI], xn[NJ];
 #pragma unroll
                 for (int mi = 0; mi < MI; mi++) wc[mi] = bl128(rWp, lc * 16, (((ft0 + mi) * nsb + sb) * 8 + u0) * 256);

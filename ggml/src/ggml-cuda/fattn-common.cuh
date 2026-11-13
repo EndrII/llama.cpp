@@ -1347,6 +1347,10 @@ void launch_fattn(
 ) {
     constexpr int ncols = ncols1 * ncols2;
 
+#if !defined(GGML_USE_HIP)
+    (void) fold_ok; // only used by the HIP-only partial-result fold path below
+#endif
+
     const ggml_tensor * Q = dst->src[0];
     const ggml_tensor * K = dst->src[1];
     const ggml_tensor * V = dst->src[2];

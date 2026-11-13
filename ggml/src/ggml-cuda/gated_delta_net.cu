@@ -772,7 +772,14 @@ static void launch_gated_delta_net(
         int64_t sb1,   int64_t sb2, int64_t sb3,
         int64_t neqk1, int64_t rq3,
         float scale, int64_t state_slot_stride, int K, cudaStream_t stream,
-        const float * rows_base = nullptr, const int32_t * rows_ids = nullptr, int64_t rows_stride = 0, float l2eps = -1.f, const gdn_ab_args ab = gdn_ab_args{}) {
+        const float * rows_base = nullptr, const int32_t * rows_ids = nullptr, int64_t rows_stride = 0, float l2eps = -1.f
+#if defined(GGML_USE_HIP)
+        , const gdn_ab_args ab = gdn_ab_args{} // rows/l2/ab are consumed only by the HIP-only gated_delta_net_cols kernel
+#endif
+        ) {
+#if !defined(GGML_USE_HIP)
+    (void) rows_base; (void) rows_ids; (void) rows_stride; (void) l2eps;
+#endif
     //TODO: Add chunked kernel for even faster pre-fill
     const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
     // four columns per warp (see the kernel); shrink the CTA when the wider CTA would leave
@@ -928,16 +935,20 @@ static void ggml_cuda_op_gated_delta_net_impl(
     ggml_tensor * src_beta  = dst->src[4];
     ggml_tensor * src_state = dst->src[5];
     float l2eps = -1.f;
+#if defined(GGML_USE_HIP)
     gdn_ab_args ab = {};
+#endif
     {
         std::lock_guard<std::mutex> lk(g_gdn_rows_mu);
         auto it = g_gdn_l2.find(dst);
         if (it != g_gdn_l2.end()) { src_q = it->second.q; src_k = it->second.k; l2eps = it->second.eps; }
+#if defined(GGML_USE_HIP)
         auto ia = g_gdn_ab.find(dst);
         if (ia != g_gdn_ab.end()) {
             ab = { (const uint16_t *) ia->second.aw->data, (const uint16_t *) ia->second.bw->data, (const float *) ia->second.x->data,
                    (const float *) ia->second.bias->data, (const float *) ia->second.scl->data, (int) ia->second.x->ne[0] };
         }
+#endif
     }
 
     GGML_TENSOR_LOCALS(int64_t, neq, src_q, ne);
@@ -1039,11 +1050,19 @@ static void ggml_cuda_op_gated_delta_net_impl(
         if (keep_rs) {
             launch_gated_delta_net<false, true>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
                 S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream, rows_base, rows_ids, rows_stride, l2eps, ab);
+                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream, rows_base, rows_ids, rows_stride, l2eps
+#if defined(GGML_USE_HIP)
+                , ab
+#endif
+                );
         } else {
             launch_gated_delta_net<false, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
                 S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream, rows_base, rows_ids, rows_stride, l2eps, ab);
+                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream, rows_base, rows_ids, rows_stride, l2eps
+#if defined(GGML_USE_HIP)
+                , ab
+#endif
+                );
         }
     }
 }

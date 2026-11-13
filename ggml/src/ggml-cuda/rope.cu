@@ -731,7 +731,7 @@ static __global__ void __launch_bounds__(256) k_attn_prep(const attn_prep_args a
     const float v = (isq ? a.qx + (int64_t) h * a.qs1 : a.kx + h * 256)[t];
     float ss = v * v;
 #pragma unroll
-    for (int o = 16; o > 0; o >>= 1) { ss += __shfl_xor(ss, o, 32); }
+    for (int o = 16; o > 0; o >>= 1) { ss += __shfl_xor_sync(0xffffffffu, ss, o, 32); }
     if ((t & 31) == 0) { red[t >> 5] = ss; }
     __syncthreads();
     float tot = 0.f;
